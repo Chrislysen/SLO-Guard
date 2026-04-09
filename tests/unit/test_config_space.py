@@ -11,7 +11,7 @@ from sloguard.types import VariableDef
 
 def test_build_serving_space():
     space = build_serving_space()
-    assert len(space.variables) == 11
+    assert len(space.variables) == 8
     assert "quantization" in space.variables
     assert "max_num_seqs" in space.variables
     assert "gpu_memory_utilization" in space.variables
@@ -34,12 +34,14 @@ def test_sample_random_respects_bounds():
     rng = random.Random(123)
     for _ in range(100):
         config = space.sample_random(rng)
-        assert 1 <= config["max_num_seqs"] <= 256
-        assert 256 <= config["max_num_batched_tokens"] <= 8192
-        assert 0 <= config["swap_space"] <= 8
-        assert config["block_size"] in [8, 16, 32]
-        assert config["dtype"] in ["float16", "bfloat16"]
-        assert config["quantization"] in ["fp16", "awq", "gptq", "squeezellm"]
+        assert 4 <= config["max_num_seqs"] <= 128
+        assert 512 <= config["max_num_batched_tokens"] <= 8192
+        assert 512 <= config["max_model_len"] <= 4096
+        assert 0.70 <= config["gpu_memory_utilization"] <= 0.95
+        assert config["enforce_eager"] in [True, False]
+        assert config["enable_chunked_prefill"] in [True, False]
+        assert config["enable_prefix_caching"] in [True, False]
+        assert config["quantization"] in ["fp16"]
 
 
 def test_propose_neighbor_changes_something():

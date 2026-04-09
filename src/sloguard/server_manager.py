@@ -80,12 +80,16 @@ class VLLMServerManager:
         cmd = self._build_command(config)
         logger.info("Starting vLLM: %s", " ".join(cmd))
 
+        # Use offline mode so vLLM doesn't hit HuggingFace on every restart
+        env = {**__import__("os").environ, "HF_HUB_OFFLINE": "1"}
+
         try:
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=env,
             )
         except FileNotFoundError:
             self._stderr_output = "vLLM not found. Install with: pip install vllm"
@@ -140,10 +144,10 @@ class VLLMServerManager:
             return False
 
     def _build_command(self, config: dict[str, Any]) -> list[str]:
-        """Build the vLLM CLI command from a config dict.
+        """Build the vLLM 0.19 CLI command from a config dict.
 
-        Compatible with vLLM 0.19+ CLI (--flag / --no-flag booleans,
-        no --swap-space, uses --cpu-offload-gb instead).
+        Only emits flags for knobs present in the config. Skips defaults
+        so vLLM can auto-detect where appropriate.
         """
         cmd = [
             "python", "-m", "vllm.entrypoints.openai.api_server",
@@ -152,15 +156,16 @@ class VLLMServerManager:
             "--port", str(self.port),
         ]
 
-        # Value flags: knob -> CLI flag
-        value_flags = {
-            "quantization": "--quantization",
-            "max_num_seqs": "--max-num-seqs",
-            "max_num_batched_tokens": "--max-num-batched-tokens",
-            "gpu_memory_utilization": "--gpu-memory-utilization",
-            "block_size": "--block-size",
-            "max_model_len": "--max-model-len",
-            "dtype": "--dtype",
+        # Value flags: knob -> (CLI flag, skip_value)
+        # skip_value: if config value equals this, don't emit the flag
+        value_flags: dict[str, tuple[str, Any]] = {
+            "quantization": ("--quantization", "fp16"),
+            "max_num_seqs": ("--max-num-seqs", None),
+            "max_num_batched_tokens": ("--max-num-batched-tokens", None),
+            "gpu_memory_utilization": ("--gpu-memory-utilization", None),
+            "max_model_len": ("--max-model-len", None),
+            "dtype": ("--dtype", None),
+            "block_size": ("--block-size", None),
         }
 
         # Boolean flags: knob -> (--flag, --no-flag)
@@ -170,28 +175,18 @@ class VLLMServerManager:
             "enable_prefix_caching": ("--enable-prefix-caching", "--no-enable-prefix-caching"),
         }
 
-        for knob, flag in value_flags.items():
+        for knob, (flag, skip_val) in value_flags.items():
             if knob not in config:
                 continue
             value = config[knob]
-
-            # Skip default quantization (fp16 = no quantization flag needed)
-            if knob == "quantization" and value == "fp16":
+            if skip_val is not None and value == skip_val:
                 continue
-
             cmd.extend([flag, str(value)])
 
         for knob, (true_flag, false_flag) in bool_flags.items():
             if knob not in config:
                 continue
-            if config[knob] is True:
-                cmd.append(true_flag)
-            else:
-                cmd.append(false_flag)
-
-        # swap_space -> cpu-offload-gb (vLLM 0.19+)
-        if "swap_space" in config and config["swap_space"] > 0:
-            cmd.extend(["--cpu-offload-gb", str(config["swap_space"])])
+            cmd.append(true_flag if config[knob] else false_flag)
 
         return cmd
 

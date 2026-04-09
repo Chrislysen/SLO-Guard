@@ -202,19 +202,18 @@ class SearchSpace:
 def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
     """Fix known vLLM constraint violations in a config.
 
-    vLLM requires max_num_batched_tokens >= max_num_seqs.
-    Also ensures max_model_len >= prompt sizes we'll use.
+    vLLM 0.19 requires:
+      - max_num_batched_tokens >= max_num_seqs
+      - max_num_batched_tokens >= max_model_len
     """
-    max_seqs = config.get("max_num_seqs", 1)
-    max_batched = config.get("max_num_batched_tokens", 256)
+    max_seqs = config.get("max_num_seqs", 8)
+    max_model_len = config.get("max_model_len", 512)
+    max_batched = config.get("max_num_batched_tokens", 512)
 
-    # vLLM requires max_num_batched_tokens >= max_num_seqs
-    if max_batched < max_seqs:
-        config["max_num_batched_tokens"] = max(max_seqs, 256)
-
-    # Ensure max_model_len is at least 512 for reasonable prompts
-    if config.get("max_model_len", 512) < 512:
-        config["max_model_len"] = 512
+    # max_num_batched_tokens must be >= both max_num_seqs and max_model_len
+    required_min = max(max_seqs, max_model_len)
+    if max_batched < required_min:
+        config["max_num_batched_tokens"] = required_min
 
     return config
 
@@ -222,16 +221,19 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
 def build_serving_space(
     quantization_choices: list[str] | None = None,
 ) -> SearchSpace:
-    """Build the vLLM serving configuration search space.
+    """Build the vLLM 0.19 serving configuration search space.
 
-    11 knobs covering quantization, batching, memory management,
-    and execution options. Conditional dependencies reflect real
-    vLLM constraints.
+    Tunable knobs chosen to produce configs that vLLM actually accepts.
+    Removed knobs that mostly cause crashes without meaningful
+    performance variation (swap_space/cpu-offload, block_size).
+
+    The remaining 7 knobs cover the key performance axes:
+      - Batching: max_num_seqs, max_num_batched_tokens
+      - Memory: gpu_memory_utilization, max_model_len
+      - Execution: enforce_eager, enable_chunked_prefill, enable_prefix_caching
 
     Args:
         quantization_choices: Quantization methods available for the model.
-            For unquantized models (fp16/bf16 checkpoints), use ["fp16"].
-            For AWQ-quantized checkpoints, use ["fp16", "awq"]. Etc.
             Defaults to ["fp16"] (safest for any model).
     """
     if quantization_choices is None:
@@ -243,52 +245,29 @@ def build_serving_space(
             var_type="categorical",
             choices=quantization_choices,
         ),
+        # Batching — the main throughput/latency tradeoff
         VariableDef(
             name="max_num_seqs",
             var_type="integer",
-            low=1,
-            high=256,
+            low=4,
+            high=128,
             log_scale=True,
         ),
         VariableDef(
             name="max_num_batched_tokens",
             var_type="integer",
-            low=256,
+            low=512,
             high=8192,
             log_scale=True,
         ),
+        # Memory — how much GPU to use for KV cache
         VariableDef(
             name="gpu_memory_utilization",
             var_type="continuous",
-            low=0.50,
+            low=0.70,
             high=0.95,
         ),
-        VariableDef(
-            name="enforce_eager",
-            var_type="categorical",
-            choices=[True, False],
-        ),
-        VariableDef(
-            name="enable_chunked_prefill",
-            var_type="categorical",
-            choices=[True, False],
-        ),
-        VariableDef(
-            name="enable_prefix_caching",
-            var_type="categorical",
-            choices=[True, False],
-        ),
-        VariableDef(
-            name="block_size",
-            var_type="categorical",
-            choices=[8, 16, 32],
-        ),
-        VariableDef(
-            name="swap_space",
-            var_type="integer",
-            low=0,
-            high=8,
-        ),
+        # Context length — trades memory for capability
         VariableDef(
             name="max_model_len",
             var_type="integer",
@@ -296,10 +275,23 @@ def build_serving_space(
             high=4096,
             log_scale=True,
         ),
+        # Execution mode — CUDA graphs vs eager
         VariableDef(
-            name="dtype",
+            name="enforce_eager",
             var_type="categorical",
-            choices=["float16", "bfloat16"],
+            choices=[True, False],
+        ),
+        # Chunked prefill — reduces TTFT variance on long prompts
+        VariableDef(
+            name="enable_chunked_prefill",
+            var_type="categorical",
+            choices=[True, False],
+        ),
+        # Prefix caching — helps with repeated prompts
+        VariableDef(
+            name="enable_prefix_caching",
+            var_type="categorical",
+            choices=[True, False],
         ),
     ]
     return SearchSpace(variables)
