@@ -220,7 +220,7 @@ class ExperimentRunner:
                 self.server.stop()
                 return result
 
-            # Run benchmark
+            # Run benchmark with hard trial timeout
             gen = create_generator(
                 mode=self.workload_mode,
                 base_url=self.server.base_url,
@@ -228,12 +228,21 @@ class ExperimentRunner:
                 seed=self.optimizer.seed + trial_id,
                 **self.workload_kwargs,
             )
-            request_results = asyncio.run(gen.run())
+            request_results = asyncio.run(gen.run(trial_timeout=180.0))
 
-            # If all requests failed, treat as crash
-            if request_results and all(not r.success for r in request_results):
+            # If no results at all, treat as crash
+            if not request_results:
                 result.crashed = True
-                result.crash_type = "startup_failure"
+                result.crash_type = "timeout"
+                result.error_msg = "No request results — server unresponsive"
+                result.eval_time_s = time.monotonic() - eval_start
+                self.server.stop()
+                return result
+
+            # If all requests failed, mark infeasible (not crash) — the server
+            # started but couldn't handle the workload at this config
+            if all(not r.success for r in request_results):
+                result.feasible = False
                 result.error_msg = f"All {len(request_results)} requests failed: {request_results[0].error}"
                 result.eval_time_s = time.monotonic() - eval_start
                 self.server.stop()

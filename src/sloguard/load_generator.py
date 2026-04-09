@@ -91,17 +91,32 @@ class LoadGenerator:
         self.rng = random.Random(seed)
         self.results: list[RequestResult] = []
 
-    async def run(self) -> list[RequestResult]:
-        """Run the load generation and return per-request results."""
+    async def run(self, trial_timeout: float = 180.0) -> list[RequestResult]:
+        """Run the load generation and return per-request results.
+
+        Args:
+            trial_timeout: Hard timeout for the entire trial in seconds.
+                If exceeded, returns whatever results were collected.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._run_inner(), timeout=trial_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Trial timeout after %.0fs — returning %d results collected so far",
+                trial_timeout, len(self.results),
+            )
+            return self.results
+
+    async def _run_inner(self) -> list[RequestResult]:
+        """Inner run loop — called within the trial timeout."""
         self.results = []
         inter_arrival_times = self._generate_inter_arrival_times()
 
         connector = aiohttp.TCPConnector(limit=self.workload.num_requests)
         timeout = aiohttp.ClientTimeout(total=self.workload.timeout_per_request)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            # Send requests sequentially with inter-arrival delay.
-            # Each request runs to completion before the next starts.
-            # This avoids piling up concurrent requests on slow configs.
             for i in range(self.workload.num_requests):
                 if i > 0 and i - 1 < len(inter_arrival_times):
                     await asyncio.sleep(inter_arrival_times[i - 1])
@@ -112,7 +127,24 @@ class LoadGenerator:
                 output_len = self.rng.randint(
                     self.workload.output_len_min, self.workload.output_len_max
                 )
-                result = await self._send_request(session, i, prompt_len, output_len)
+
+                # Hard per-request timeout of 60s
+                try:
+                    result = await asyncio.wait_for(
+                        self._send_request(session, i, prompt_len, output_len),
+                        timeout=60.0,
+                    )
+                except asyncio.TimeoutError:
+                    result = RequestResult(
+                        request_id=i,
+                        prompt_tokens=prompt_len,
+                        output_tokens=0,
+                        send_time=time.monotonic(),
+                        end_time=time.monotonic(),
+                        error="Hard timeout after 60s",
+                        success=False,
+                    )
+
                 self.results.append(result)
 
                 # If 3+ consecutive failures, server is likely broken — abort early
