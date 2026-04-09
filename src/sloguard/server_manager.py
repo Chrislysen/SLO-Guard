@@ -15,7 +15,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # How long to wait for the server to start (seconds)
-DEFAULT_STARTUP_TIMEOUT = 300
+DEFAULT_STARTUP_TIMEOUT = 120
 # How long to wait between health checks (seconds)
 HEALTH_CHECK_INTERVAL = 2
 # How long to wait for graceful shutdown (seconds)
@@ -140,7 +140,11 @@ class VLLMServerManager:
             return False
 
     def _build_command(self, config: dict[str, Any]) -> list[str]:
-        """Build the vLLM CLI command from a config dict."""
+        """Build the vLLM CLI command from a config dict.
+
+        Compatible with vLLM 0.19+ CLI (--flag / --no-flag booleans,
+        no --swap-space, uses --cpu-offload-gb instead).
+        """
         cmd = [
             "python", "-m", "vllm.entrypoints.openai.api_server",
             "--model", self.model,
@@ -148,37 +152,46 @@ class VLLMServerManager:
             "--port", str(self.port),
         ]
 
-        # Map config knobs to vLLM CLI args
-        knob_to_flag = {
+        # Value flags: knob -> CLI flag
+        value_flags = {
             "quantization": "--quantization",
             "max_num_seqs": "--max-num-seqs",
             "max_num_batched_tokens": "--max-num-batched-tokens",
             "gpu_memory_utilization": "--gpu-memory-utilization",
-            "enforce_eager": "--enforce-eager",
-            "enable_chunked_prefill": "--enable-chunked-prefill",
-            "enable_prefix_caching": "--enable-prefix-caching",
             "block_size": "--block-size",
-            "swap_space": "--swap-space",
             "max_model_len": "--max-model-len",
             "dtype": "--dtype",
         }
 
-        for knob, flag in knob_to_flag.items():
+        # Boolean flags: knob -> (--flag, --no-flag)
+        bool_flags = {
+            "enforce_eager": ("--enforce-eager", "--no-enforce-eager"),
+            "enable_chunked_prefill": ("--enable-chunked-prefill", "--no-enable-chunked-prefill"),
+            "enable_prefix_caching": ("--enable-prefix-caching", "--no-enable-prefix-caching"),
+        }
+
+        for knob, flag in value_flags.items():
             if knob not in config:
                 continue
             value = config[knob]
 
-            # Skip default quantization
+            # Skip default quantization (fp16 = no quantization flag needed)
             if knob == "quantization" and value == "fp16":
                 continue
 
-            # Boolean flags (no value needed if True, skip if False)
-            if knob in ("enforce_eager", "enable_chunked_prefill", "enable_prefix_caching"):
-                if value is True:
-                    cmd.append(flag)
-                continue
-
             cmd.extend([flag, str(value)])
+
+        for knob, (true_flag, false_flag) in bool_flags.items():
+            if knob not in config:
+                continue
+            if config[knob] is True:
+                cmd.append(true_flag)
+            else:
+                cmd.append(false_flag)
+
+        # swap_space -> cpu-offload-gb (vLLM 0.19+)
+        if "swap_space" in config and config["swap_space"] > 0:
+            cmd.extend(["--cpu-offload-gb", str(config["swap_space"])])
 
         return cmd
 
@@ -187,7 +200,13 @@ class VLLMServerManager:
         while time.monotonic() - start_time < self.startup_timeout:
             # Check if process died
             if self._process.poll() is not None:
-                logger.error("vLLM process exited with code %d", self._process.returncode)
+                # Read all stderr before reporting
+                self._capture_stderr_blocking()
+                logger.error(
+                    "vLLM process exited with code %d: %s",
+                    self._process.returncode,
+                    self._stderr_output[:200] if self._stderr_output else "(no stderr)",
+                )
                 return False
 
             if self.health_check():
@@ -199,27 +218,31 @@ class VLLMServerManager:
         return False
 
     def _capture_stderr(self) -> None:
-        """Read any available stderr from the process."""
+        """Read any available stderr from the process (non-blocking)."""
         if self._process is None or self._process.stderr is None:
             return
         try:
-            # Non-blocking read of whatever stderr has
-            import select
-            import os
-
-            if hasattr(select, "select"):
-                # Unix-like: use select for non-blocking check
-                ready, _, _ = select.select([self._process.stderr], [], [], 0.1)
-                if ready:
-                    data = self._process.stderr.read()
-                    if data:
-                        self._stderr_output += data
+            if self._process.poll() is not None:
+                self._capture_stderr_blocking()
             else:
-                # Windows fallback: try to read if process is done
-                if self._process.poll() is not None:
-                    data = self._process.stderr.read()
-                    if data:
-                        self._stderr_output += data
+                import select
+                if hasattr(select, "select"):
+                    ready, _, _ = select.select([self._process.stderr], [], [], 0.1)
+                    if ready:
+                        data = self._process.stderr.read()
+                        if data:
+                            self._stderr_output += data
+        except Exception:
+            pass
+
+    def _capture_stderr_blocking(self) -> None:
+        """Read all remaining stderr (use only when process has exited)."""
+        if self._process is None or self._process.stderr is None:
+            return
+        try:
+            data = self._process.stderr.read()
+            if data:
+                self._stderr_output += data
         except Exception:
             pass
 

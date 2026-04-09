@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sloguard.config_space import SearchSpace, build_serving_space
+from sloguard.config_space import SearchSpace, build_serving_space, fix_serving_config
 from sloguard.crash_classifier import CrashClassifier, CrashType
 from sloguard.load_generator import (
     BurstGenerator,
@@ -142,6 +142,7 @@ class ExperimentRunner:
         for trial_id in range(budget):
             trial_start = time.monotonic()
             config = self.optimizer.ask()
+            config = fix_serving_config(config)
 
             logger.info(
                 "Trial %d/%d: %s",
@@ -207,6 +208,18 @@ class ExperimentRunner:
         result.server_startup_time_s = self.server.startup_time
 
         try:
+            # Pre-flight: send a single tiny request to verify the engine works
+            if not self._preflight_check():
+                crash_type = self.classifier.classify(
+                    stderr=self.server.stderr_output,
+                )
+                result.crashed = True
+                result.crash_type = crash_type.value if crash_type.value != "healthy" else "startup_failure"
+                result.error_msg = "Pre-flight check failed: engine started but cannot serve"
+                result.eval_time_s = time.monotonic() - eval_start
+                self.server.stop()
+                return result
+
             # Run benchmark
             gen = create_generator(
                 mode=self.workload_mode,
@@ -216,6 +229,15 @@ class ExperimentRunner:
                 **self.workload_kwargs,
             )
             request_results = asyncio.run(gen.run())
+
+            # If all requests failed, treat as crash
+            if request_results and all(not r.success for r in request_results):
+                result.crashed = True
+                result.crash_type = "startup_failure"
+                result.error_msg = f"All {len(request_results)} requests failed: {request_results[0].error}"
+                result.eval_time_s = time.monotonic() - eval_start
+                self.server.stop()
+                return result
 
             # Collect metrics
             metrics = self.metrics_collector.compute(request_results)
@@ -279,6 +301,41 @@ class ExperimentRunner:
 
         result.eval_time_s = time.monotonic() - eval_start
         return result
+
+    def _preflight_check(self) -> bool:
+        """Send a single tiny request to verify the vLLM engine is functional.
+
+        Some configs start the HTTP server but crash the inference engine,
+        returning 500 on actual requests. This catches that case fast.
+        """
+        import urllib.request
+        import urllib.error
+        import json as json_mod
+
+        url = f"{self.server.base_url}/v1/chat/completions"
+        payload = json_mod.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 1,
+            "stream": False,
+        }).encode()
+
+        try:
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode()
+                data = json_mod.loads(body)
+                if "error" in data:
+                    logger.warning("Pre-flight got error: %s", data["error"])
+                    return False
+                return resp.status == 200
+        except Exception as e:
+            logger.warning("Pre-flight check failed: %s", e)
+            return False
 
     def _build_trial_result(
         self,

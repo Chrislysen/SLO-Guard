@@ -199,18 +199,49 @@ class SearchSpace:
                 break
 
 
-def build_serving_space() -> SearchSpace:
+def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Fix known vLLM constraint violations in a config.
+
+    vLLM requires max_num_batched_tokens >= max_num_seqs.
+    Also ensures max_model_len >= prompt sizes we'll use.
+    """
+    max_seqs = config.get("max_num_seqs", 1)
+    max_batched = config.get("max_num_batched_tokens", 256)
+
+    # vLLM requires max_num_batched_tokens >= max_num_seqs
+    if max_batched < max_seqs:
+        config["max_num_batched_tokens"] = max(max_seqs, 256)
+
+    # Ensure max_model_len is at least 512 for reasonable prompts
+    if config.get("max_model_len", 512) < 512:
+        config["max_model_len"] = 512
+
+    return config
+
+
+def build_serving_space(
+    quantization_choices: list[str] | None = None,
+) -> SearchSpace:
     """Build the vLLM serving configuration search space.
 
     11 knobs covering quantization, batching, memory management,
     and execution options. Conditional dependencies reflect real
     vLLM constraints.
+
+    Args:
+        quantization_choices: Quantization methods available for the model.
+            For unquantized models (fp16/bf16 checkpoints), use ["fp16"].
+            For AWQ-quantized checkpoints, use ["fp16", "awq"]. Etc.
+            Defaults to ["fp16"] (safest for any model).
     """
+    if quantization_choices is None:
+        quantization_choices = ["fp16"]
+
     variables = [
         VariableDef(
             name="quantization",
             var_type="categorical",
-            choices=["fp16", "awq", "gptq", "squeezellm"],
+            choices=quantization_choices,
         ),
         VariableDef(
             name="max_num_seqs",

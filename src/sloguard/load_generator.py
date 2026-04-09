@@ -74,7 +74,7 @@ class WorkloadConfig:
     output_len_min: int = 64
     output_len_max: int = 256
     model: str = ""  # model name for the API
-    timeout_per_request: float = 120.0  # seconds
+    timeout_per_request: float = 30.0  # seconds
 
 
 class LoadGenerator:
@@ -99,7 +99,9 @@ class LoadGenerator:
         connector = aiohttp.TCPConnector(limit=self.workload.num_requests)
         timeout = aiohttp.ClientTimeout(total=self.workload.timeout_per_request)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            tasks = []
+            # Send requests sequentially with inter-arrival delay.
+            # Each request runs to completion before the next starts.
+            # This avoids piling up concurrent requests on slow configs.
             for i in range(self.workload.num_requests):
                 if i > 0 and i - 1 < len(inter_arrival_times):
                     await asyncio.sleep(inter_arrival_times[i - 1])
@@ -110,12 +112,17 @@ class LoadGenerator:
                 output_len = self.rng.randint(
                     self.workload.output_len_min, self.workload.output_len_max
                 )
-                task = asyncio.create_task(
-                    self._send_request(session, i, prompt_len, output_len)
-                )
-                tasks.append(task)
+                result = await self._send_request(session, i, prompt_len, output_len)
+                self.results.append(result)
 
-            self.results = await asyncio.gather(*tasks)
+                # If 3+ consecutive failures, server is likely broken — abort early
+                if len(self.results) >= 3:
+                    recent = self.results[-3:]
+                    if all(not r.success for r in recent):
+                        logger.warning(
+                            "3 consecutive request failures — aborting load generation"
+                        )
+                        break
 
         return self.results
 
