@@ -1,0 +1,36 @@
+# Bursty trace-driven workload — production traffic with load spikes
+workload:
+  type: bursty
+  mode: burst
+  request_rate: 4.0
+  num_requests: 100
+  prompt_len_min: 128
+  prompt_len_max: 512
+  output_len_min: 64
+  output_len_max: 256
+  benchmark_duration_s: 300
+  burst:
+    baseline_rate: 4.0
+    peak_rate: 20.0
+    burst_start_frac: 0.3
+    burst_end_frac: 0.7
+
+slo:
+  ttft_p99_ms: 500.0
+  itl_p99_ms: 100.0
+  request_latency_p99_ms: 30000.0
+  gpu_memory_mb: 0
+
+models:
+  - Qwen/Qwen2-1.5B
+  - microsoft/phi-2
+  - mistralai/Mistral-7B-v0.1
+
+optimizers:
+  - random
+  - tpe
+  - tba
+  - tba-tpe
+
+budget: 30
+seeds: [0, 1, 2, 3, 4]

@@ -1,0 +1,31 @@
+# Batch / offline workload — summarization, extraction
+workload:
+  type: batch
+  mode: fixed
+  request_rate: 16.0
+  num_requests: 100
+  prompt_len_min: 512
+  prompt_len_max: 2048
+  output_len_min: 256
+  output_len_max: 1024
+  benchmark_duration_s: 300
+
+slo:
+  ttft_p99_ms: 0  # no TTFT constraint for batch
+  itl_p99_ms: 0   # no ITL constraint for batch
+  request_latency_p99_ms: 30000.0
+  gpu_memory_mb: 0
+
+models:
+  - Qwen/Qwen2-1.5B
+  - microsoft/phi-2
+  - mistralai/Mistral-7B-v0.1
+
+optimizers:
+  - random
+  - tpe
+  - tba
+  - tba-tpe
+
+budget: 30
+seeds: [0, 1, 2, 3, 4]
