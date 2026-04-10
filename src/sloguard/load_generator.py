@@ -115,7 +115,10 @@ class LoadGenerator:
         inter_arrival_times = self._generate_inter_arrival_times()
 
         connector = aiohttp.TCPConnector(limit=self.workload.num_requests)
-        timeout = aiohttp.ClientTimeout(total=self.workload.timeout_per_request)
+        timeout = aiohttp.ClientTimeout(
+            total=self.workload.timeout_per_request,
+            sock_read=30,  # kill stuck streaming reads after 30s of silence
+        )
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             for i in range(self.workload.num_requests):
                 if i > 0 and i - 1 < len(inter_arrival_times):

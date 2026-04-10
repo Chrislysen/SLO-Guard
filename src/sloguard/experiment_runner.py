@@ -7,6 +7,7 @@ proposing a config, starting vLLM, benchmarking, and recording results.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import time
 import uuid
@@ -220,7 +221,10 @@ class ExperimentRunner:
                 self.server.stop()
                 return result
 
-            # Run benchmark with hard trial timeout
+            # Run benchmark with hard trial timeout.
+            # asyncio.wait_for can't interrupt aiohttp's blocking streaming
+            # reads, so we run the entire event loop in a daemon thread and
+            # kill it with a threading-level timeout as a hard backstop.
             gen = create_generator(
                 mode=self.workload_mode,
                 base_url=self.server.base_url,
@@ -228,7 +232,13 @@ class ExperimentRunner:
                 seed=self.optimizer.seed + trial_id,
                 **self.workload_kwargs,
             )
-            request_results = asyncio.run(gen.run(trial_timeout=180.0))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, gen.run(trial_timeout=180.0))
+                try:
+                    request_results = future.result(timeout=180.0)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("Hard thread timeout after 180s — benchmark hung")
+                    request_results = gen.results  # grab whatever was collected
 
             # If no results at all, treat as crash
             if not request_results:
