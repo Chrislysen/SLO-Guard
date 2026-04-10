@@ -7,8 +7,8 @@ proposing a config, starting vLLM, benchmarking, and recording results.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
+import multiprocessing
 import time
 import uuid
 from datetime import datetime, timezone
@@ -74,6 +74,35 @@ def create_optimizer(
         budget=budget,
         seed=seed,
     )
+
+
+def _benchmark_worker(
+    queue: multiprocessing.Queue,
+    workload_mode: str,
+    base_url: str,
+    workload: Any,
+    seed: int,
+    workload_kwargs: dict[str, Any],
+    trial_timeout: float,
+) -> None:
+    """Top-level function for the benchmark subprocess.
+
+    Must be top-level (not a method) so multiprocessing can pickle it.
+    Runs the load generator and puts results into the queue.
+    """
+    try:
+        gen = create_generator(
+            mode=workload_mode,
+            base_url=base_url,
+            workload=workload,
+            seed=seed,
+            **workload_kwargs,
+        )
+        results = asyncio.run(gen.run(trial_timeout=trial_timeout))
+        queue.put(results)
+    except Exception as e:
+        logging.getLogger(__name__).error("Benchmark worker error: %s", e)
+        queue.put([])
 
 
 class ExperimentRunner:
@@ -221,24 +250,14 @@ class ExperimentRunner:
                 self.server.stop()
                 return result
 
-            # Run benchmark with hard trial timeout.
-            # asyncio.wait_for can't interrupt aiohttp's blocking streaming
-            # reads, so we run the entire event loop in a daemon thread and
-            # kill it with a threading-level timeout as a hard backstop.
-            gen = create_generator(
-                mode=self.workload_mode,
-                base_url=self.server.base_url,
-                workload=self.workload,
-                seed=self.optimizer.seed + trial_id,
-                **self.workload_kwargs,
+            # Run benchmark in a subprocess with a hard kill timeout.
+            # asyncio.wait_for can't interrupt aiohttp's streaming reads,
+            # and ThreadPoolExecutor.__exit__ waits for the thread, so the
+            # only reliable backstop is multiprocessing + process.kill().
+            request_results = self._run_benchmark_subprocess(
+                trial_id=trial_id,
+                trial_timeout=180.0,
             )
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, gen.run(trial_timeout=180.0))
-                try:
-                    request_results = future.result(timeout=180.0)
-                except concurrent.futures.TimeoutError:
-                    logger.warning("Hard thread timeout after 180s — benchmark hung")
-                    request_results = gen.results  # grab whatever was collected
 
             # If no results at all, treat as crash
             if not request_results:
@@ -320,6 +339,49 @@ class ExperimentRunner:
 
         result.eval_time_s = time.monotonic() - eval_start
         return result
+
+    def _run_benchmark_subprocess(
+        self,
+        trial_id: int,
+        trial_timeout: float,
+    ) -> list:
+        """Run load generation in a subprocess that can be hard-killed.
+
+        Returns list of RequestResult (possibly empty on timeout).
+        """
+        from sloguard.load_generator import RequestResult
+
+        queue: multiprocessing.Queue = multiprocessing.Queue()
+        proc = multiprocessing.Process(
+            target=_benchmark_worker,
+            args=(
+                queue,
+                self.workload_mode,
+                self.server.base_url,
+                self.workload,
+                self.optimizer.seed + trial_id,
+                self.workload_kwargs,
+                trial_timeout,
+            ),
+            daemon=True,
+        )
+        proc.start()
+        proc.join(timeout=trial_timeout)
+
+        if proc.is_alive():
+            logger.warning("Hard-killing benchmark process after %.0fs", trial_timeout)
+            proc.kill()
+            proc.join(timeout=5)
+
+        # Drain results from queue
+        results = []
+        try:
+            while not queue.empty():
+                results = queue.get_nowait()
+        except Exception:
+            pass
+
+        return results
 
     def _preflight_check(self) -> bool:
         """Send a single tiny request to verify the vLLM engine is functional.
