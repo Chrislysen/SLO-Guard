@@ -147,6 +147,30 @@ def test_fix_serving_config_enforces_constraints():
     assert fixed4["enable_chunked_prefill"] is True
 
 
+def test_fix_serving_config_memory_guard():
+    """Memory pressure guard caps max_num_seqs * max_model_len <= 128K tokens."""
+    # High max_num_seqs * max_model_len should be capped
+    config = {"max_num_seqs": 128, "max_model_len": 4096,
+              "max_num_batched_tokens": 8192}
+    fixed = fix_serving_config(config)
+    assert fixed["max_num_seqs"] * fixed["max_model_len"] <= 131072
+    assert fixed["max_num_seqs"] >= 4
+    assert fixed["max_model_len"] >= 512
+
+    # Moderate combo should pass through unchanged
+    config2 = {"max_num_seqs": 32, "max_model_len": 1024,
+               "max_num_batched_tokens": 1024}
+    fixed2 = fix_serving_config(config2)
+    assert fixed2["max_num_seqs"] == 32
+    assert fixed2["max_model_len"] == 1024
+
+    # Edge case: max_num_seqs=64, max_model_len=4096 → 262144 > 128K
+    config3 = {"max_num_seqs": 64, "max_model_len": 4096,
+               "max_num_batched_tokens": 4096}
+    fixed3 = fix_serving_config(config3)
+    assert fixed3["max_num_seqs"] * fixed3["max_model_len"] <= 131072
+
+
 def test_variable_def_validation():
     with pytest.raises(ValueError):
         VariableDef(name="bad", var_type="categorical")  # no choices

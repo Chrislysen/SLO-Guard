@@ -207,6 +207,7 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
       - max_num_batched_tokens >= max_model_len
       - enforce_eager + enable_chunked_prefill must not both be True
       - gpu_memory_utilization must be a clean float for CLI
+      - max_num_seqs * max_model_len must fit in GPU memory budget
     """
     # --- Boolean conflict: enforce_eager + chunked_prefill ---
     # vLLM 0.19 returns internal 500s when both are True.
@@ -222,6 +223,23 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
     required_min = max(max_seqs, max_model_len)
     if max_batched < required_min:
         config["max_num_batched_tokens"] = required_min
+
+    # --- Memory pressure guard ---
+    # On A100 40GB with a ~3GB model, the KV cache gets roughly:
+    #   available = gpu_mem_util * 40GB - 5GB (model + overhead) ≈ 25-33GB
+    # Each token in the KV cache costs ~96KB for Qwen2-1.5B.
+    # max_num_seqs * max_model_len gives the worst-case token count.
+    # Cap at 128K tokens (~12GB KV cache) to prevent OOM on A100 40GB.
+    # This keeps crash rate low while preserving most of the search space.
+    max_kv_tokens = max_seqs * max_model_len
+    kv_token_limit = 131072  # 128K tokens
+    if max_kv_tokens > kv_token_limit:
+        # Prefer reducing max_model_len first (less impact on throughput)
+        config["max_model_len"] = max(512, kv_token_limit // max_seqs)
+        max_model_len = config["max_model_len"]
+        # Recheck: if still over, also reduce max_num_seqs
+        if max_seqs * max_model_len > kv_token_limit:
+            config["max_num_seqs"] = max(4, kv_token_limit // max_model_len)
 
     # --- Clean up gpu_memory_utilization for CLI ---
     if "gpu_memory_utilization" in config:
