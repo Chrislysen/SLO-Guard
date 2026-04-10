@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from sloguard.config_space import SearchSpace, build_serving_space
+from sloguard.config_space import SearchSpace, build_serving_space, fix_serving_config
 from sloguard.types import VariableDef
 
 
@@ -39,7 +39,11 @@ def test_sample_random_respects_bounds():
         assert 512 <= config["max_model_len"] <= 4096
         assert 0.70 <= config["gpu_memory_utilization"] <= 0.95
         assert config["enforce_eager"] in [True, False]
-        assert config["enable_chunked_prefill"] in [True, False]
+        # enable_chunked_prefill is conditional on enforce_eager == False
+        if config["enforce_eager"] is False:
+            assert config["enable_chunked_prefill"] in [True, False]
+        else:
+            assert "enable_chunked_prefill" not in config
         assert config["enable_prefix_caching"] in [True, False]
         assert config["quantization"] in ["fp16"]
 
@@ -116,6 +120,31 @@ def test_allowed_values_filter():
         )
         if "quantization" in neighbor:
             assert neighbor["quantization"] in ["fp16", "awq", "gptq", "squeezellm"]
+
+
+def test_fix_serving_config_enforces_constraints():
+    # enforce_eager + chunked_prefill conflict
+    config = {"enforce_eager": True, "enable_chunked_prefill": True,
+              "max_num_seqs": 8, "max_model_len": 512, "max_num_batched_tokens": 512}
+    fixed = fix_serving_config(config)
+    assert fixed["enable_chunked_prefill"] is False
+
+    # max_num_batched_tokens must be >= max_model_len
+    config2 = {"max_num_seqs": 8, "max_model_len": 2048, "max_num_batched_tokens": 512}
+    fixed2 = fix_serving_config(config2)
+    assert fixed2["max_num_batched_tokens"] >= 2048
+
+    # gpu_memory_utilization gets rounded
+    config3 = {"gpu_memory_utilization": 0.8347291, "max_num_seqs": 8,
+               "max_model_len": 512, "max_num_batched_tokens": 512}
+    fixed3 = fix_serving_config(config3)
+    assert fixed3["gpu_memory_utilization"] == 0.83
+
+    # No conflict: enforce_eager=False + chunked_prefill=True is fine
+    config4 = {"enforce_eager": False, "enable_chunked_prefill": True,
+               "max_num_seqs": 8, "max_model_len": 512, "max_num_batched_tokens": 512}
+    fixed4 = fix_serving_config(config4)
+    assert fixed4["enable_chunked_prefill"] is True
 
 
 def test_variable_def_validation():

@@ -168,11 +168,16 @@ class VLLMServerManager:
             "block_size": ("--block-size", None),
         }
 
-        # Boolean flags: knob -> (--flag, --no-flag)
+        # Boolean flags with --no- variants (BooleanOptionalAction in vLLM)
         bool_flags = {
-            "enforce_eager": ("--enforce-eager", "--no-enforce-eager"),
             "enable_chunked_prefill": ("--enable-chunked-prefill", "--no-enable-chunked-prefill"),
             "enable_prefix_caching": ("--enable-prefix-caching", "--no-enable-prefix-caching"),
+        }
+
+        # enforce_eager is store_true in vLLM — no --no-enforce-eager exists.
+        # Only emit the flag when True; omit entirely when False (vLLM default).
+        true_only_flags = {
+            "enforce_eager": "--enforce-eager",
         }
 
         for knob, (flag, skip_val) in value_flags.items():
@@ -182,6 +187,10 @@ class VLLMServerManager:
             if skip_val is not None and value == skip_val:
                 continue
             cmd.extend([flag, str(value)])
+
+        for knob, flag in true_only_flags.items():
+            if config.get(knob):
+                cmd.append(flag)
 
         for knob, (true_flag, false_flag) in bool_flags.items():
             if knob not in config:

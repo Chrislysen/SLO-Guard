@@ -205,7 +205,15 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
     vLLM 0.19 requires:
       - max_num_batched_tokens >= max_num_seqs
       - max_num_batched_tokens >= max_model_len
+      - enforce_eager + enable_chunked_prefill must not both be True
+      - gpu_memory_utilization must be a clean float for CLI
     """
+    # --- Boolean conflict: enforce_eager + chunked_prefill ---
+    # vLLM 0.19 returns internal 500s when both are True.
+    if config.get("enforce_eager") and config.get("enable_chunked_prefill"):
+        config["enable_chunked_prefill"] = False
+
+    # --- Batching constraints ---
     max_seqs = config.get("max_num_seqs", 8)
     max_model_len = config.get("max_model_len", 512)
     max_batched = config.get("max_num_batched_tokens", 512)
@@ -214,6 +222,10 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
     required_min = max(max_seqs, max_model_len)
     if max_batched < required_min:
         config["max_num_batched_tokens"] = required_min
+
+    # --- Clean up gpu_memory_utilization for CLI ---
+    if "gpu_memory_utilization" in config:
+        config["gpu_memory_utilization"] = round(config["gpu_memory_utilization"], 2)
 
     return config
 
@@ -281,11 +293,14 @@ def build_serving_space(
             var_type="categorical",
             choices=[True, False],
         ),
-        # Chunked prefill — reduces TTFT variance on long prompts
+        # Chunked prefill — reduces TTFT variance on long prompts.
+        # Only active when enforce_eager is False; the combination
+        # enforce_eager + chunked_prefill causes internal 500s in vLLM 0.19.
         VariableDef(
             name="enable_chunked_prefill",
             var_type="categorical",
             choices=[True, False],
+            condition="enforce_eager == False",
         ),
         # Prefix caching — helps with repeated prompts
         VariableDef(
