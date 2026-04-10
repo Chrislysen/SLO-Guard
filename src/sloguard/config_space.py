@@ -272,11 +272,13 @@ def build_serving_space(
             high=8192,
             log_scale=True,
         ),
-        # Memory — how much GPU to use for KV cache
+        # Memory — how much GPU to use for KV cache.
+        # Lower bound 0.50 accommodates GPUs with display/system overhead
+        # (e.g. laptop GPUs with ~5 GB used by display driver).
         VariableDef(
             name="gpu_memory_utilization",
             var_type="continuous",
-            low=0.70,
+            low=0.50,
             high=0.95,
         ),
         # Context length — trades memory for capability

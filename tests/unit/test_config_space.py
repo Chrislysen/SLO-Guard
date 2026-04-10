@@ -37,7 +37,7 @@ def test_sample_random_respects_bounds():
         assert 4 <= config["max_num_seqs"] <= 128
         assert 512 <= config["max_num_batched_tokens"] <= 8192
         assert 512 <= config["max_model_len"] <= 4096
-        assert 0.70 <= config["gpu_memory_utilization"] <= 0.95
+        assert 0.50 <= config["gpu_memory_utilization"] <= 0.95
         assert config["enforce_eager"] in [True, False]
         # enable_chunked_prefill is conditional on enforce_eager == False
         if config["enforce_eager"] is False:

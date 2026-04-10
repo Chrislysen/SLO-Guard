@@ -388,10 +388,13 @@ class ExperimentRunner:
 
         Some configs start the HTTP server but crash the inference engine,
         returning 500 on actual requests. This catches that case fast.
+
+        Uses subprocess + curl with --max-time for a hard timeout that
+        actually works (urllib's timeout doesn't cover response body reads,
+        causing hangs when vLLM's EngineCore dies after health check passes).
         """
-        import urllib.request
-        import urllib.error
         import json as json_mod
+        import subprocess
 
         url = f"{self.server.base_url}/v1/chat/completions"
         payload = json_mod.dumps({
@@ -399,21 +402,35 @@ class ExperimentRunner:
             "messages": [{"role": "user", "content": "Hi"}],
             "max_tokens": 1,
             "stream": False,
-        }).encode()
+        })
 
         try:
-            req = urllib.request.Request(
-                url, data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
+            proc = subprocess.run(
+                [
+                    "curl", "-s",
+                    "--connect-timeout", "5",
+                    "--max-time", "30",
+                    "-H", "Content-Type: application/json",
+                    "-d", payload,
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=35,
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                body = resp.read().decode()
-                data = json_mod.loads(body)
-                if "error" in data:
-                    logger.warning("Pre-flight got error: %s", data["error"])
-                    return False
-                return resp.status == 200
+            if proc.returncode != 0:
+                logger.warning("Pre-flight curl failed (exit %d): %s",
+                               proc.returncode, proc.stderr[:200])
+                return False
+
+            data = json_mod.loads(proc.stdout)
+            if "error" in data:
+                logger.warning("Pre-flight got error: %s", data["error"])
+                return False
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning("Pre-flight hard timeout after 35s")
+            return False
         except Exception as e:
             logger.warning("Pre-flight check failed: %s", e)
             return False
