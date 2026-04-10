@@ -3,7 +3,8 @@
 # Run this after first_benchmark.sh (random search) to compare optimizers
 set -e
 source ~/sloguard-env/bin/activate
-cd /mnt/c/Users/chris/VSCODE/SLO-GUARD
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
 echo "============================================"
 echo "  SLO-Guard TBA-TPE Benchmark"
