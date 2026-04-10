@@ -158,26 +158,27 @@ class VLLMServerManager:
 
         # Value flags: knob -> (CLI flag, skip_value)
         # skip_value: if config value equals this, don't emit the flag
+        # NOTE: dtype and block_size intentionally omitted — let vLLM
+        # auto-detect dtype (A100 prefers bfloat16) and use default block_size.
         value_flags: dict[str, tuple[str, Any]] = {
             "quantization": ("--quantization", "fp16"),
             "max_num_seqs": ("--max-num-seqs", None),
             "max_num_batched_tokens": ("--max-num-batched-tokens", None),
             "gpu_memory_utilization": ("--gpu-memory-utilization", None),
             "max_model_len": ("--max-model-len", None),
-            "dtype": ("--dtype", None),
-            "block_size": ("--block-size", None),
         }
 
         # Boolean flags with --no- variants (BooleanOptionalAction in vLLM)
         bool_flags = {
             "enable_chunked_prefill": ("--enable-chunked-prefill", "--no-enable-chunked-prefill"),
-            "enable_prefix_caching": ("--enable-prefix-caching", "--no-enable-prefix-caching"),
         }
 
-        # enforce_eager is store_true in vLLM — no --no-enforce-eager exists.
-        # Only emit the flag when True; omit entirely when False (vLLM default).
+        # store_true flags — only emit when True, omit when False
+        # (lets vLLM use its defaults; avoids --no-* variants that may
+        # not exist in all vLLM 0.19 builds).
         true_only_flags = {
             "enforce_eager": "--enforce-eager",
+            "enable_prefix_caching": "--enable-prefix-caching",
         }
 
         for knob, (flag, skip_val) in value_flags.items():
@@ -207,9 +208,9 @@ class VLLMServerManager:
                 # Read all stderr before reporting
                 self._capture_stderr_blocking()
                 logger.error(
-                    "vLLM process exited with code %d: %s",
+                    "vLLM process exited with code %d:\n%s",
                     self._process.returncode,
-                    self._stderr_output[:200] if self._stderr_output else "(no stderr)",
+                    self._stderr_output if self._stderr_output else "(no stderr)",
                 )
                 return False
 
