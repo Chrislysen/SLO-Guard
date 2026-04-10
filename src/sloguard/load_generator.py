@@ -170,11 +170,6 @@ class LoadGenerator:
     ) -> RequestResult:
         """Send a single streaming request and collect token timestamps."""
         prompt = self._make_prompt(prompt_len)
-        result = RequestResult(
-            request_id=request_id,
-            prompt_tokens=prompt_len,
-            output_tokens=0,
-        )
 
         payload = {
             "model": self.workload.model,
@@ -184,7 +179,12 @@ class LoadGenerator:
             "temperature": 0.0,
         }
 
-        result.send_time = time.monotonic()
+        result = RequestResult(
+            request_id=request_id,
+            prompt_tokens=prompt_len,
+            output_tokens=0,
+            send_time=time.monotonic(),
+        )
 
         try:
             async with session.post(
