@@ -90,11 +90,12 @@ class TBATPEHybrid(BaseOptimizer):
                 cooldown_trials=cooldown_trials,
             )
 
-        # Adaptive handoff conditions
-        self._min_tba_trials = 5
-        self._max_tba_trials = 15
-        self._min_feasible_for_handoff = 5
-        self._min_bad_for_handoff = 3
+        # Adaptive handoff conditions — scale with budget so TPE always
+        # gets ~60% of the trials for exploitation.
+        self._min_tba_trials = max(3, budget // 5)          # at least 3
+        self._max_tba_trials = max(5, int(budget * 0.4))    # forced handoff at 40%
+        self._min_feasible_for_handoff = max(2, budget // 6)
+        self._min_bad_for_handoff = max(1, budget // 10)
         self._min_family_diversity = min_family_diversity
         self._in_tpe_phase = False
 
@@ -102,6 +103,11 @@ class TBATPEHybrid(BaseOptimizer):
         self._study: optuna.Study | None = None
         self._pending_trial: optuna.trial.Trial | None = None
         self._distributions: dict[str, Any] | None = None
+
+    @property
+    def phase(self) -> str:
+        """Current optimizer phase: 'tba-explore' or 'tpe-exploit'."""
+        return "tpe-exploit" if self._in_tpe_phase else "tba-explore"
 
     @property
     def _p_structural(self) -> float:

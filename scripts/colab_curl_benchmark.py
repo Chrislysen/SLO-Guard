@@ -357,9 +357,10 @@ def run_experiment(args: argparse.Namespace) -> None:
         config = optimizer.ask()
         config = fix_serving_config(config)
 
+        phase = optimizer.phase
         logger.info(
-            "Trial %d/%d: max_num_seqs=%s, gpu_mem=%.2f, enforce_eager=%s, max_model_len=%s",
-            trial_id + 1, args.budget,
+            "Trial %d/%d [%s]: max_num_seqs=%s, gpu_mem=%.2f, enforce_eager=%s, max_model_len=%s",
+            trial_id + 1, args.budget, phase,
             config.get("max_num_seqs"),
             config.get("gpu_memory_utilization", 0),
             config.get("enforce_eager"),
@@ -378,7 +379,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.server_startup_time_s = server.startup_time
             eval_result.eval_time_s = time.monotonic() - trial_start
             optimizer.tell(config, eval_result)
-            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer)
+            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
             all_results.append((config, eval_result))
             _print_status(trial_id, args.budget, eval_result, optimizer)
             continue
@@ -394,7 +395,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.eval_time_s = time.monotonic() - trial_start
             server.stop()
             optimizer.tell(config, eval_result)
-            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer)
+            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
             all_results.append((config, eval_result))
             _print_status(trial_id, args.budget, eval_result, optimizer)
             continue
@@ -420,7 +421,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.eval_time_s = time.monotonic() - trial_start
             server.stop()
             optimizer.tell(config, eval_result)
-            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer)
+            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
             all_results.append((config, eval_result))
             _print_status(trial_id, args.budget, eval_result, optimizer)
             continue
@@ -446,7 +447,7 @@ def run_experiment(args: argparse.Namespace) -> None:
 
         server.stop()
         optimizer.tell(config, eval_result)
-        _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer)
+        _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
         all_results.append((config, eval_result))
         _print_status(trial_id, args.budget, eval_result, optimizer)
 
@@ -503,6 +504,7 @@ def _log_trial(
     args: argparse.Namespace,
     slo: SLOContract,
     optimizer,
+    phase: str = "",
 ) -> None:
     """Append one trial to the JSONL log."""
     trial = ServingTrialResult(
@@ -544,6 +546,7 @@ def _log_trial(
         slo_request_latency_p99_ms=slo.request_latency_p99_ms,
         slo_gpu_memory_mb=slo.gpu_memory_mb,
         optimizer_name=type(optimizer).__name__,
+        optimizer_phase=phase,
         seed=args.seed,
     )
     with open(log_path, "a") as f:

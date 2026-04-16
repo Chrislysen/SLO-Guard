@@ -51,6 +51,11 @@ class BaseOptimizer(ABC):
         return self._best_feasible
 
     @property
+    def phase(self) -> str:
+        """Current optimizer phase (for logging). Override in subclasses."""
+        return "single"
+
+    @property
     def n_crashes(self) -> int:
         return sum(1 for _, r in self.history if r.crashed)
 

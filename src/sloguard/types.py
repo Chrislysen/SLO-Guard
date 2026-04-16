@@ -114,6 +114,7 @@ class ServingTrialResult:
 
     # Optimizer metadata
     optimizer_name: str = ""
+    optimizer_phase: str = ""  # e.g. "tba-explore", "tpe-exploit"
     seed: int = 0
 
 

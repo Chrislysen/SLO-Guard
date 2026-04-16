@@ -175,8 +175,8 @@ class ExperimentRunner:
             config = fix_serving_config(config)
 
             logger.info(
-                "Trial %d/%d: %s",
-                trial_id + 1, budget,
+                "Trial %d/%d [%s]: %s",
+                trial_id + 1, budget, self.optimizer.phase,
                 {k: v for k, v in config.items()
                  if k in ("quantization", "max_num_seqs", "gpu_memory_utilization")},
             )
@@ -482,5 +482,6 @@ class ExperimentRunner:
             slo_request_latency_p99_ms=self.slo.request_latency_p99_ms,
             slo_gpu_memory_mb=self.slo.gpu_memory_mb,
             optimizer_name=type(self.optimizer).__name__,
+            optimizer_phase=self.optimizer.phase,
             seed=self.optimizer.seed,
         )

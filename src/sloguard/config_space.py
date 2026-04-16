@@ -224,15 +224,17 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
     if max_batched < required_min:
         config["max_num_batched_tokens"] = required_min
 
-    # --- Memory pressure guard ---
-    # On A100 40GB with a ~3GB model, the KV cache gets roughly:
-    #   available = gpu_mem_util * 40GB - 5GB (model + overhead) ≈ 25-33GB
-    # Each token in the KV cache costs ~96KB for Qwen2-1.5B.
-    # max_num_seqs * max_model_len gives the worst-case token count.
-    # Cap at 128K tokens (~12GB KV cache) to prevent OOM on A100 40GB.
-    # This keeps crash rate low while preserving most of the search space.
+    # --- Dynamic memory pressure guard ---
+    # Scale KV token budget with gpu_memory_utilization instead of a
+    # static cap.  On A100 40GB with a ~3GB model:
+    #   available_gb = gpu_mem * 40 - 5  (model + activations + overhead)
+    #   max_tokens   = available_gb / 0.000096  (96 KB per KV token, Qwen2-1.5B)
+    # Apply a 0.7 safety margin so we don't sit right at the OOM edge.
+    # Falls back to 131072 (128K) when gpu_memory_utilization is missing.
+    gpu_mem = config.get("gpu_memory_utilization", 0.90)
+    available_gb = max(gpu_mem * 40 - 5, 1.0)
+    kv_token_limit = int(available_gb / 0.000096 * 0.7)
     max_kv_tokens = max_seqs * max_model_len
-    kv_token_limit = 131072  # 128K tokens
     if max_kv_tokens > kv_token_limit:
         # Prefer reducing max_model_len first (less impact on throughput)
         config["max_model_len"] = max(512, kv_token_limit // max_seqs)
@@ -291,12 +293,12 @@ def build_serving_space(
             log_scale=True,
         ),
         # Memory — how much GPU to use for KV cache.
-        # Lower bound 0.50 accommodates GPUs with display/system overhead
-        # (e.g. laptop GPUs with ~5 GB used by display driver).
+        # Lower bound 0.60: anything below wastes too much VRAM on dedicated
+        # GPUs (Colab A100) and pushes configs into OOM territory.
         VariableDef(
             name="gpu_memory_utilization",
             var_type="continuous",
-            low=0.50,
+            low=0.60,
             high=0.95,
         ),
         # Context length — trades memory for capability

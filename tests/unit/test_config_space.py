@@ -25,7 +25,7 @@ def test_sample_random_produces_valid_config():
         assert space.is_valid(config)
         assert "quantization" in config
         assert "max_num_seqs" in config
-        assert config["gpu_memory_utilization"] >= 0.50
+        assert config["gpu_memory_utilization"] >= 0.60
         assert config["gpu_memory_utilization"] <= 0.95
 
 
@@ -37,7 +37,7 @@ def test_sample_random_respects_bounds():
         assert 4 <= config["max_num_seqs"] <= 128
         assert 512 <= config["max_num_batched_tokens"] <= 8192
         assert 512 <= config["max_model_len"] <= 4096
-        assert 0.50 <= config["gpu_memory_utilization"] <= 0.95
+        assert 0.60 <= config["gpu_memory_utilization"] <= 0.95
         assert config["enforce_eager"] in [True, False]
         # enable_chunked_prefill is conditional on enforce_eager == False
         if config["enforce_eager"] is False:
@@ -147,28 +147,39 @@ def test_fix_serving_config_enforces_constraints():
     assert fixed4["enable_chunked_prefill"] is True
 
 
+def _kv_token_limit(gpu_mem: float) -> int:
+    """Mirror the dynamic guard formula from fix_serving_config."""
+    available_gb = max(gpu_mem * 40 - 5, 1.0)
+    return int(available_gb / 0.000096 * 0.7)
+
+
 def test_fix_serving_config_memory_guard():
-    """Memory pressure guard caps max_num_seqs * max_model_len <= 128K tokens."""
-    # High max_num_seqs * max_model_len should be capped
+    """Dynamic memory guard scales KV token cap with gpu_memory_utilization."""
+    # High seqs * len at high gpu_mem — should be capped
     config = {"max_num_seqs": 128, "max_model_len": 4096,
-              "max_num_batched_tokens": 8192}
+              "max_num_batched_tokens": 8192, "gpu_memory_utilization": 0.90}
     fixed = fix_serving_config(config)
-    assert fixed["max_num_seqs"] * fixed["max_model_len"] <= 131072
+    limit = _kv_token_limit(0.90)
+    assert fixed["max_num_seqs"] * fixed["max_model_len"] <= limit
     assert fixed["max_num_seqs"] >= 4
     assert fixed["max_model_len"] >= 512
 
     # Moderate combo should pass through unchanged
     config2 = {"max_num_seqs": 32, "max_model_len": 1024,
-               "max_num_batched_tokens": 1024}
+               "max_num_batched_tokens": 1024, "gpu_memory_utilization": 0.90}
     fixed2 = fix_serving_config(config2)
     assert fixed2["max_num_seqs"] == 32
     assert fixed2["max_model_len"] == 1024
 
-    # Edge case: max_num_seqs=64, max_model_len=4096 → 262144 > 128K
+    # Low gpu_mem gets a tighter cap — same seqs*len might exceed it
     config3 = {"max_num_seqs": 64, "max_model_len": 4096,
-               "max_num_batched_tokens": 4096}
+               "max_num_batched_tokens": 4096, "gpu_memory_utilization": 0.60}
     fixed3 = fix_serving_config(config3)
-    assert fixed3["max_num_seqs"] * fixed3["max_model_len"] <= 131072
+    limit_low = _kv_token_limit(0.60)
+    assert fixed3["max_num_seqs"] * fixed3["max_model_len"] <= limit_low
+
+    # High gpu_mem is more permissive than low gpu_mem
+    assert _kv_token_limit(0.95) > _kv_token_limit(0.60)
 
 
 def test_variable_def_validation():

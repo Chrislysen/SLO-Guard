@@ -133,6 +133,19 @@ def plot_convergence(data: dict[str, list[list[dict]]], output: Path) -> None:
             ax2.plot(x[valid], lat_mean[valid], color=color, label=label,
                      linewidth=2, marker="o", markersize=4)
 
+    # Mark TBA→TPE handoff if phase data is available
+    for opt_name, runs in data.items():
+        if opt_name != "TBATPEHybrid":
+            continue
+        for trials in runs:
+            for i, t in enumerate(trials):
+                if t.get("optimizer_phase") == "tpe-exploit":
+                    # First TPE trial = handoff point
+                    for ax in (ax1, ax2):
+                        ax.axvline(x=i + 1, color="#4CAF50", linestyle="--",
+                                   alpha=0.6, linewidth=1.5, label="TBA→TPE handoff")
+                    break
+
     has_latency = any(line.get_label() != "_nolegend_" for line in ax2.get_lines())
     ax1.set_xlabel("Trial", fontsize=12)
     ax1.set_ylabel("Best Goodput (tokens/s)", fontsize=12)
