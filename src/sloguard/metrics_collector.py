@@ -54,6 +54,10 @@ class BenchmarkMetrics:
     failed_requests: int = 0
     total_output_tokens: int = 0
     duration_s: float = 0.0
+    # Max number of in-flight requests observed during the run. Lets us
+    # verify the load generator actually issued concurrent load rather
+    # than serializing (a real bug prior to the concurrent rewrite).
+    peak_concurrency: int | None = None
 
     # Raw distributions for plotting
     ttft_values: list[float] = field(default_factory=list)
@@ -72,9 +76,14 @@ class MetricsCollector:
     def __init__(self, slo_contract: SLOContract | None = None):
         self.slo = slo_contract
 
-    def compute(self, results: list[RequestResult]) -> BenchmarkMetrics:
+    def compute(
+        self,
+        results: list[RequestResult],
+        peak_concurrency: int | None = None,
+    ) -> BenchmarkMetrics:
         """Compute all metrics from request results."""
         metrics = BenchmarkMetrics()
+        metrics.peak_concurrency = peak_concurrency
 
         if not results:
             return metrics

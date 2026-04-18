@@ -77,10 +77,25 @@ class WorkloadConfig:
     output_len_max: int = 256
     model: str = ""  # model name for the API
     timeout_per_request: float = 30.0  # seconds
+    # Cap on in-flight requests. Without this the generator either serialized
+    # (old bug) or could open one socket per request. 50 matches typical vLLM
+    # serving configs where max_num_seqs tops out in that range.
+    max_concurrency: int = 50
 
 
 class LoadGenerator:
-    """Base class for load generation."""
+    """Base class for load generation.
+
+    Requests are scheduled against an absolute timeline (t0 + cumulative
+    inter-arrival) and sent concurrently, capped by
+    ``WorkloadConfig.max_concurrency``. The previous implementation awaited
+    each request to completion before sleeping for the next inter-arrival,
+    which serialized the load and made any nominal "req/s" a lie.
+    """
+
+    # Abort when failure rate exceeds this threshold (after MIN_ABORT_COMPLETIONS).
+    _ABORT_FAIL_RATE = 0.5
+    _ABORT_MIN_COMPLETIONS = 5
 
     def __init__(
         self,
@@ -94,6 +109,7 @@ class LoadGenerator:
         self.rng = random.Random(seed)
         self.results: list[RequestResult] = []
         self.timeouts = timeouts or TimeoutConfig()
+        self.peak_concurrency = 0
 
     async def run(self, trial_timeout: float | None = None) -> list[RequestResult]:
         """Run the load generation and return per-request results.
@@ -114,55 +130,118 @@ class LoadGenerator:
             return self.results
 
     async def _run_inner(self) -> list[RequestResult]:
-        """Inner run loop — called within the trial timeout."""
-        self.results = []
-        inter_arrival_times = self._generate_inter_arrival_times()
+        """Schedule all requests on an absolute timeline and run them concurrently.
 
-        connector = aiohttp.TCPConnector(limit=self.workload.num_requests)
+        Key invariant: a request scheduled for t0+2s doesn't wait for the
+        t0+1s request to finish — it fires at its intended send time,
+        subject only to ``max_concurrency``. That's what makes this real
+        load rather than a serialized trickle.
+        """
+        self.results = []
+        self.peak_concurrency = 0
+        inter_arrival_times = self._generate_inter_arrival_times()
+        max_concurrency = max(1, int(self.workload.max_concurrency))
+
+        connector = aiohttp.TCPConnector(limit=max_concurrency)
         timeout = aiohttp.ClientTimeout(
             total=self.workload.timeout_per_request,
             sock_read=30,  # kill stuck streaming reads after 30s of silence
         )
+        sem = asyncio.Semaphore(max_concurrency)
+        in_flight = 0
+        in_flight_lock = asyncio.Lock()
+        completions: list[RequestResult] = []
+        abort_event = asyncio.Event()
+
+        # Absolute schedule: request i fires at t0 + sum(inter_arrival_times[:i]).
+        offsets: list[float] = [0.0]
+        for dt in inter_arrival_times[: self.workload.num_requests - 1]:
+            offsets.append(offsets[-1] + dt)
+
         per_req_cap = self.timeouts.per_request_s
+
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            for i in range(self.workload.num_requests):
-                if i > 0 and i - 1 < len(inter_arrival_times):
-                    await asyncio.sleep(inter_arrival_times[i - 1])
+            t0 = time.monotonic()
+
+            async def send_one(i: int, offset: float) -> RequestResult:
+                nonlocal in_flight
+                # Wait until the scheduled send time (absolute, not cumulative).
+                delay = (t0 + offset) - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                if abort_event.is_set():
+                    return RequestResult(
+                        request_id=i, prompt_tokens=0, output_tokens=0,
+                        send_time=time.monotonic(), end_time=time.monotonic(),
+                        error="Aborted by circuit breaker", success=False,
+                    )
 
                 prompt_len = self.rng.randint(
-                    self.workload.prompt_len_min, self.workload.prompt_len_max
+                    self.workload.prompt_len_min, self.workload.prompt_len_max,
                 )
                 output_len = self.rng.randint(
-                    self.workload.output_len_min, self.workload.output_len_max
+                    self.workload.output_len_min, self.workload.output_len_max,
                 )
 
-                try:
-                    result = await asyncio.wait_for(
-                        self._send_request(session, i, prompt_len, output_len),
-                        timeout=per_req_cap,
-                    )
-                except asyncio.TimeoutError:
-                    result = RequestResult(
-                        request_id=i,
-                        prompt_tokens=prompt_len,
-                        output_tokens=0,
-                        send_time=time.monotonic(),
-                        end_time=time.monotonic(),
-                        error=f"Hard timeout after {per_req_cap:.0f}s",
-                        success=False,
-                    )
+                async with sem:
+                    async with in_flight_lock:
+                        in_flight += 1
+                        if in_flight > self.peak_concurrency:
+                            self.peak_concurrency = in_flight
+                    try:
+                        try:
+                            result = await asyncio.wait_for(
+                                self._send_request(session, i, prompt_len, output_len),
+                                timeout=per_req_cap,
+                            )
+                        except asyncio.TimeoutError:
+                            result = RequestResult(
+                                request_id=i,
+                                prompt_tokens=prompt_len,
+                                output_tokens=0,
+                                send_time=time.monotonic(),
+                                end_time=time.monotonic(),
+                                error=f"Hard timeout after {per_req_cap:.0f}s",
+                                success=False,
+                            )
+                    finally:
+                        async with in_flight_lock:
+                            in_flight -= 1
 
-                self.results.append(result)
+                completions.append(result)
+                # Rate-based circuit breaker: once we have enough data, if
+                # the failure rate crosses the threshold, stop scheduling.
+                if len(completions) >= self._ABORT_MIN_COMPLETIONS:
+                    failures = sum(1 for r in completions if not r.success)
+                    if failures / len(completions) > self._ABORT_FAIL_RATE:
+                        if not abort_event.is_set():
+                            logger.warning(
+                                "Circuit breaker: %d/%d failures (>%.0f%%) — "
+                                "aborting load generation",
+                                failures, len(completions),
+                                self._ABORT_FAIL_RATE * 100,
+                            )
+                            abort_event.set()
+                return result
 
-                # If 3+ consecutive failures, server is likely broken — abort early
-                if len(self.results) >= 3:
-                    recent = self.results[-3:]
-                    if all(not r.success for r in recent):
-                        logger.warning(
-                            "3 consecutive request failures — aborting load generation"
-                        )
-                        break
+            tasks = [
+                asyncio.create_task(send_one(i, offsets[i]))
+                for i in range(self.workload.num_requests)
+            ]
+            gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Order by request_id so downstream indexing is stable.
+        ordered: list[RequestResult] = []
+        for i, r in enumerate(gathered):
+            if isinstance(r, BaseException):
+                ordered.append(RequestResult(
+                    request_id=i, prompt_tokens=0, output_tokens=0,
+                    send_time=t0, end_time=time.monotonic(),
+                    error=f"{type(r).__name__}: {r}", success=False,
+                ))
+            else:
+                ordered.append(r)
+        self.results = ordered
         return self.results
 
     async def _send_request(

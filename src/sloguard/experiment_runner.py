@@ -130,10 +130,10 @@ def _benchmark_worker(
             **workload_kwargs,
         )
         results = asyncio.run(gen.run(trial_timeout=timeouts.per_trial_s))
-        queue.put(results)
+        queue.put({"results": results, "peak_concurrency": gen.peak_concurrency})
     except Exception as e:
         logging.getLogger(__name__).error("Benchmark worker error: %s", e)
-        queue.put([])
+        queue.put({"results": [], "peak_concurrency": 0})
 
 
 class ExperimentRunner:
@@ -315,7 +315,9 @@ class ExperimentRunner:
             # asyncio.wait_for can't interrupt aiohttp's streaming reads,
             # and ThreadPoolExecutor.__exit__ waits for the thread, so the
             # only reliable backstop is multiprocessing + process.kill().
-            request_results = self._run_benchmark_subprocess(trial_id=trial_id)
+            bench = self._run_benchmark_subprocess(trial_id=trial_id)
+            request_results = bench["results"]
+            peak_concurrency = bench["peak_concurrency"]
 
             # If no results at all, treat as crash
             if not request_results:
@@ -330,13 +332,18 @@ class ExperimentRunner:
             # started but couldn't handle the workload at this config
             if all(not r.success for r in request_results):
                 result.feasible = False
-                result.error_msg = f"All {len(request_results)} requests failed: {request_results[0].error}"
+                result.error_msg = (
+                    f"All {len(request_results)} requests failed: "
+                    f"{request_results[0].error}"
+                )
                 result.eval_time_s = time.monotonic() - eval_start
                 self.server.stop()
                 return result
 
             # Collect metrics
-            metrics = self.metrics_collector.compute(request_results)
+            metrics = self.metrics_collector.compute(
+                request_results, peak_concurrency=peak_concurrency,
+            )
 
             # Try to get server-side metrics. fetch_server_metrics already
             # swallows network errors (returns {}); the only callers that can
@@ -401,10 +408,11 @@ class ExperimentRunner:
         result.eval_time_s = time.monotonic() - eval_start
         return result
 
-    def _run_benchmark_subprocess(self, trial_id: int) -> list:
+    def _run_benchmark_subprocess(self, trial_id: int) -> dict[str, Any]:
         """Run load generation in a subprocess that can be hard-killed.
 
-        Returns list of RequestResult (possibly empty on timeout).
+        Returns {"results": list[RequestResult], "peak_concurrency": int}.
+        On timeout / worker death, returns an empty results list and 0 concurrency.
         """
         from sloguard.load_generator import RequestResult  # noqa: F401
 
@@ -431,16 +439,16 @@ class ExperimentRunner:
             proc.kill()
             proc.join(timeout=5)
 
-        # Drain results from queue. The worker puts exactly one item — a list
-        # of RequestResult. Take the most recent one if present.
-        results: list = []
+        # Drain results from queue. The worker puts exactly one item — a dict
+        # containing the results list and the peak in-flight concurrency.
+        payload: dict[str, Any] = {"results": [], "peak_concurrency": 0}
         while True:
             try:
-                results = queue.get_nowait()
+                payload = queue.get_nowait()
             except queue_mod.Empty:
                 break
 
-        return results
+        return payload
 
     def _preflight_check(self) -> bool:
         """Send a single tiny request to verify the vLLM engine is functional.
