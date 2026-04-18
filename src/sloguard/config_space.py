@@ -199,7 +199,13 @@ class SearchSpace:
                 break
 
 
-def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
+def fix_serving_config(
+    config: dict[str, Any],
+    vram_gb: float = 40.0,
+    kv_gb_per_token: float = 0.000096,
+    model_footprint_gb: float = 5.0,
+    safety_margin: float = 0.7,
+) -> dict[str, Any]:
     """Fix known vLLM constraint violations in a config.
 
     vLLM 0.19 requires:
@@ -208,6 +214,10 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
       - enforce_eager + enable_chunked_prefill must not both be True
       - gpu_memory_utilization must be a clean float for CLI
       - max_num_seqs * max_model_len must fit in GPU memory budget
+
+    The KV-cache budget is parametrized so callers can pass detected values
+    via :mod:`sloguard.gpu_profile`. Defaults preserve the original A100
+    40GB / Qwen2-1.5B behavior so callers without GPU detection still work.
     """
     # --- Boolean conflict: enforce_eager + chunked_prefill ---
     # vLLM 0.19 returns internal 500s when both are True.
@@ -225,15 +235,11 @@ def fix_serving_config(config: dict[str, Any]) -> dict[str, Any]:
         config["max_num_batched_tokens"] = required_min
 
     # --- Dynamic memory pressure guard ---
-    # Scale KV token budget with gpu_memory_utilization instead of a
-    # static cap.  On A100 40GB with a ~3GB model:
-    #   available_gb = gpu_mem * 40 - 5  (model + activations + overhead)
-    #   max_tokens   = available_gb / 0.000096  (96 KB per KV token, Qwen2-1.5B)
-    # Apply a 0.7 safety margin so we don't sit right at the OOM edge.
-    # Falls back to 131072 (128K) when gpu_memory_utilization is missing.
+    # available KV-cache GB = (gpu_util * VRAM) - model_footprint, then apply
+    # a safety margin and divide by per-token KV size to get a token cap.
     gpu_mem = config.get("gpu_memory_utilization", 0.90)
-    available_gb = max(gpu_mem * 40 - 5, 1.0)
-    kv_token_limit = int(available_gb / 0.000096 * 0.7)
+    available_gb = max(gpu_mem * vram_gb - model_footprint_gb, 1.0)
+    kv_token_limit = int(available_gb / kv_gb_per_token * safety_margin)
     max_kv_tokens = max_seqs * max_model_len
     if max_kv_tokens > kv_token_limit:
         # Prefer reducing max_model_len first (less impact on throughput)

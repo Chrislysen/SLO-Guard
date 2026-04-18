@@ -9,13 +9,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import queue as queue_mod
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import aiohttp
+
 from sloguard.config_space import SearchSpace, build_serving_space, fix_serving_config
 from sloguard.crash_classifier import CrashClassifier, CrashType
+from sloguard.gpu_profile import (
+    DEFAULT_VRAM_GB,
+    detect_gpu_vram_gb,
+    kv_gb_per_token_for,
+    log_gpu_info,
+    model_footprint_gb_for,
+)
 from sloguard.load_generator import (
     BurstGenerator,
     FixedRateGenerator,
@@ -155,6 +165,14 @@ class ExperimentRunner:
 
         self.results: list[tuple[dict[str, Any], EvalResult]] = []
 
+        # Detect GPU + model profile once so the memory guard scales correctly
+        # to whatever hardware we actually have.
+        log_gpu_info(model)
+        detected = detect_gpu_vram_gb()
+        self.vram_gb = detected if detected is not None else DEFAULT_VRAM_GB
+        self.kv_gb_per_token = kv_gb_per_token_for(model)
+        self.model_footprint_gb = model_footprint_gb_for(model)
+
     def run(self, budget: int | None = None) -> tuple[dict[str, Any], EvalResult] | None:
         """Run the full experiment loop.
 
@@ -172,7 +190,12 @@ class ExperimentRunner:
         for trial_id in range(budget):
             trial_start = time.monotonic()
             config = self.optimizer.ask()
-            config = fix_serving_config(config)
+            config = fix_serving_config(
+                config,
+                vram_gb=self.vram_gb,
+                kv_gb_per_token=self.kv_gb_per_token,
+                model_footprint_gb=self.model_footprint_gb,
+            )
 
             logger.info(
                 "Trial %d/%d [%s]: %s",
@@ -280,14 +303,17 @@ class ExperimentRunner:
             # Collect metrics
             metrics = self.metrics_collector.compute(request_results)
 
-            # Try to get server-side metrics
+            # Try to get server-side metrics. fetch_server_metrics already
+            # swallows network errors (returns {}); the only callers that can
+            # still raise here are asyncio.run itself (RuntimeError if invoked
+            # from inside a running event loop) or update_from_server.
             try:
                 server_metrics = asyncio.run(
                     self.metrics_collector.fetch_server_metrics(self.server.base_url)
                 )
                 self.metrics_collector.update_from_server(metrics, server_metrics)
-            except Exception:
-                pass
+            except (RuntimeError, aiohttp.ClientError, OSError) as e:
+                logger.debug("Could not fetch server-side metrics: %s", e)
 
             # Populate result
             result.ttft_p50_ms = metrics.ttft_p50
@@ -373,13 +399,14 @@ class ExperimentRunner:
             proc.kill()
             proc.join(timeout=5)
 
-        # Drain results from queue
-        results = []
-        try:
-            while not queue.empty():
+        # Drain results from queue. The worker puts exactly one item — a list
+        # of RequestResult. Take the most recent one if present.
+        results: list = []
+        while True:
+            try:
                 results = queue.get_nowait()
-        except Exception:
-            pass
+            except queue_mod.Empty:
+                break
 
         return results
 

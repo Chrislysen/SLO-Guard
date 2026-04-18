@@ -136,29 +136,22 @@ class MetricsCollector:
         self, metrics: BenchmarkMetrics, successful: list[RequestResult]
     ) -> None:
         """Compute goodput: throughput of requests meeting all SLOs."""
-        slo_meeting = 0
-        slo_meeting_tokens = 0
-
-        for r in successful:
-            ttft = r.ttft_ms
-            itl_list = r.itl_ms_list
-            max_itl = max(itl_list) if itl_list else 0.0
-            latency = r.total_latency_ms
-
-            meets_slo = self.slo.check_request(
-                ttft_ms=ttft,
-                itl_max_ms=max_itl,
-                request_latency_ms=latency,
-            )
-
-            if meets_slo:
-                slo_meeting += 1
-                slo_meeting_tokens += r.output_tokens
-
-        metrics.goodput_ratio = slo_meeting / len(successful) if successful else 0.0
-
+        assert self.slo is not None
+        ratio, tps = self.slo.compute_goodput(
+            (
+                (
+                    r.ttft_ms,
+                    max(r.itl_ms_list) if r.itl_ms_list else 0.0,
+                    r.total_latency_ms,
+                    r.output_tokens,
+                )
+                for r in successful
+            ),
+            duration_s=metrics.duration_s,
+        )
+        metrics.goodput_ratio = ratio
         if metrics.duration_s > 0:
-            metrics.goodput_tokens_per_sec = slo_meeting_tokens / metrics.duration_s
+            metrics.goodput_tokens_per_sec = tps
 
     async def fetch_server_metrics(self, base_url: str) -> dict[str, float]:
         """Fetch GPU/KV cache metrics from vLLM's Prometheus endpoint."""

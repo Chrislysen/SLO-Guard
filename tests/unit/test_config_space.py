@@ -188,3 +188,45 @@ def test_variable_def_validation():
 
     with pytest.raises(ValueError):
         VariableDef(name="bad", var_type="integer")  # no bounds
+
+
+def test_fix_serving_config_smaller_gpu_tightens_budget():
+    """A 16GB GPU must produce a tighter KV cap than the default 40GB."""
+    config = {
+        "max_num_seqs": 64, "max_model_len": 4096,
+        "max_num_batched_tokens": 4096, "gpu_memory_utilization": 0.90,
+    }
+    fixed_a100 = fix_serving_config(dict(config), vram_gb=40.0)
+    fixed_t4 = fix_serving_config(dict(config), vram_gb=16.0)
+
+    kv_a100 = fixed_a100["max_num_seqs"] * fixed_a100["max_model_len"]
+    kv_t4 = fixed_t4["max_num_seqs"] * fixed_t4["max_model_len"]
+    assert kv_t4 < kv_a100, "smaller GPU should permit fewer KV tokens"
+
+
+def test_fix_serving_config_larger_kv_per_token_tightens_budget():
+    """A model with bigger per-token KV size needs a tighter cap on same GPU."""
+    config = {
+        "max_num_seqs": 64, "max_model_len": 4096,
+        "max_num_batched_tokens": 4096, "gpu_memory_utilization": 0.90,
+    }
+    fixed_small = fix_serving_config(dict(config), kv_gb_per_token=0.000096)
+    fixed_large = fix_serving_config(dict(config), kv_gb_per_token=0.000524)
+
+    kv_small = fixed_small["max_num_seqs"] * fixed_small["max_model_len"]
+    kv_large = fixed_large["max_num_seqs"] * fixed_large["max_model_len"]
+    assert kv_large < kv_small, "fatter KV-per-token should permit fewer tokens"
+
+
+def test_fix_serving_config_model_footprint_reduces_budget():
+    """Larger model footprint leaves less room for KV cache."""
+    config = {
+        "max_num_seqs": 64, "max_model_len": 4096,
+        "max_num_batched_tokens": 4096, "gpu_memory_utilization": 0.90,
+    }
+    fixed_small = fix_serving_config(dict(config), model_footprint_gb=5.0)
+    fixed_large = fix_serving_config(dict(config), model_footprint_gb=20.0)
+
+    kv_small = fixed_small["max_num_seqs"] * fixed_small["max_model_len"]
+    kv_large = fixed_large["max_num_seqs"] * fixed_large["max_model_len"]
+    assert kv_large < kv_small

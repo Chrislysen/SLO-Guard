@@ -38,6 +38,13 @@ import numpy as np
 from sloguard.config_space import build_serving_space, fix_serving_config
 from sloguard.crash_classifier import CrashClassifier
 from sloguard.experiment_runner import create_optimizer
+from sloguard.gpu_profile import (
+    DEFAULT_VRAM_GB,
+    detect_gpu_vram_gb,
+    kv_gb_per_token_for,
+    log_gpu_info,
+    model_footprint_gb_for,
+)
 from sloguard.server_manager import VLLMServerManager
 from sloguard.slo_contract import SLOContract
 from sloguard.types import EvalResult, ServingTrialResult
@@ -274,18 +281,19 @@ def compute_metrics(
         eval_result.tokens_per_sec = total_tokens / duration
         eval_result.requests_per_sec = len(successful) / duration
 
-    # Goodput: requests meeting latency SLO
-    slo_meeting_tokens = 0
-    slo_meeting = 0
-    for r in successful:
-        latency_ms = r["time_total_s"] * 1000
-        if slo.check_request(request_latency_ms=latency_ms):
-            slo_meeting += 1
-            slo_meeting_tokens += r.get("output_tokens", 0)
-
-    eval_result.goodput_ratio = slo_meeting / len(successful)
+    # Goodput: requests meeting latency SLO. Curl benchmarks have no
+    # per-token ITL or true TTFT (non-streaming), so pass None for those —
+    # SLOContract.check_request ignores None against active bounds.
+    ratio, tps = slo.compute_goodput(
+        (
+            (None, None, r["time_total_s"] * 1000, r.get("output_tokens", 0))
+            for r in successful
+        ),
+        duration_s=duration,
+    )
+    eval_result.goodput_ratio = ratio
     if duration > 0:
-        eval_result.goodput_tokens_per_sec = slo_meeting_tokens / duration
+        eval_result.goodput_tokens_per_sec = tps
 
     eval_result.objective_value = eval_result.goodput_tokens_per_sec or 0.0
 
@@ -336,7 +344,14 @@ def run_experiment(args: argparse.Namespace) -> None:
     constraints = slo.to_constraints_dict()
     optimizer = create_optimizer(args.optimizer, space, constraints, args.budget, args.seed)
     server = VLLMServerManager(model=args.model, port=args.port)
-    classifier = CrashClassifier()
+    classifier = CrashClassifier()  # noqa: F841 — kept for parity with experiment_runner
+
+    # GPU + model profile so the memory guard scales to the actual hardware
+    log_gpu_info(args.model)
+    detected_vram = detect_gpu_vram_gb()
+    vram_gb = detected_vram if detected_vram is not None else DEFAULT_VRAM_GB
+    kv_gb = kv_gb_per_token_for(args.model)
+    footprint_gb = model_footprint_gb_for(args.model)
 
     print("=" * 60)
     print("  SLO-Guard Curl Benchmark")
@@ -355,7 +370,12 @@ def run_experiment(args: argparse.Namespace) -> None:
     for trial_id in range(args.budget):
         trial_start = time.monotonic()
         config = optimizer.ask()
-        config = fix_serving_config(config)
+        config = fix_serving_config(
+            config,
+            vram_gb=vram_gb,
+            kv_gb_per_token=kv_gb,
+            model_footprint_gb=footprint_gb,
+        )
 
         phase = optimizer.phase
         logger.info(
@@ -431,7 +451,8 @@ def run_experiment(args: argparse.Namespace) -> None:
         eval_result.server_startup_time_s = server.startup_time
         eval_result.eval_time_s = time.monotonic() - trial_start
 
-        # Fetch server-side metrics via curl
+        # Fetch server-side metrics via curl. Failures here are non-fatal —
+        # we just lose KV-cache utilization for this trial.
         try:
             proc = subprocess.run(
                 ["curl", "-s", "--max-time", "5", f"{server.base_url}/metrics"],
@@ -442,8 +463,8 @@ def run_experiment(args: argparse.Namespace) -> None:
                 m = re.search(r"gpu_cache_usage_perc\s+(\d+\.?\d*)", proc.stdout)
                 if m:
                     eval_result.kv_cache_utilization = float(m.group(1))
-        except Exception:
-            pass
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.debug("Could not fetch /metrics: %s", e)
 
         server.stop()
         optimizer.tell(config, eval_result)

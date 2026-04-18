@@ -6,6 +6,7 @@ per-request and aggregate compliance checking, plus goodput computation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 
 @dataclass
@@ -104,6 +105,33 @@ class SLOContract:
             headroom["gpu_memory"] = 1.0 - (gpu_memory_mb / self.gpu_memory_mb)
 
         return headroom
+
+    def compute_goodput(
+        self,
+        requests: Iterable[tuple[float | None, float | None, float | None, int]],
+        duration_s: float,
+    ) -> tuple[float, float]:
+        """Compute (goodput_ratio, goodput_tokens_per_sec) over *requests*.
+
+        *requests* yields tuples of (ttft_ms, max_itl_ms, latency_ms, output_tokens).
+        Pass ``None`` for any metric the caller does not measure (e.g. curl
+        benchmarks have no per-token ITL); :meth:`check_request` ignores
+        ``None`` against active SLO bounds.
+        """
+        total = 0
+        meeting = 0
+        meeting_tokens = 0
+        for ttft, max_itl, latency, tokens in requests:
+            total += 1
+            if self.check_request(
+                ttft_ms=ttft, itl_max_ms=max_itl, request_latency_ms=latency,
+            ):
+                meeting += 1
+                meeting_tokens += tokens
+
+        ratio = meeting / total if total else 0.0
+        tps = meeting_tokens / duration_s if duration_s > 0 else 0.0
+        return ratio, tps
 
     def to_constraints_dict(self) -> dict[str, float]:
         """Convert to constraints dict for optimizer interface.

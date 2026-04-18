@@ -70,3 +70,41 @@ class TestSLOContract:
         assert "ttft_p99_ms" in d
         assert "itl_p99_ms" not in d
         assert "gpu_memory_mb" not in d
+
+
+class TestComputeGoodput:
+    def test_all_meeting(self, slo):
+        # All four requests meet every SLO; total tokens = 400, duration = 4s
+        requests = [(100, 50, 1000, 100)] * 4
+        ratio, tps = slo.compute_goodput(requests, duration_s=4.0)
+        assert ratio == 1.0
+        assert tps == 100.0  # 400 tokens / 4s
+
+    def test_partial_meeting(self, slo):
+        requests = [
+            (100, 50, 1000, 100),    # meets
+            (600, 50, 1000, 100),    # ttft violated
+            (100, 150, 1000, 100),   # itl violated
+            (100, 50, 35000, 100),   # latency violated
+        ]
+        ratio, tps = slo.compute_goodput(requests, duration_s=10.0)
+        assert ratio == pytest.approx(0.25)
+        assert tps == pytest.approx(10.0)  # only 100 of 400 tokens count
+
+    def test_empty(self, slo):
+        ratio, tps = slo.compute_goodput([], duration_s=10.0)
+        assert ratio == 0.0
+        assert tps == 0.0
+
+    def test_zero_duration(self, slo):
+        ratio, tps = slo.compute_goodput([(100, 50, 1000, 100)], duration_s=0.0)
+        assert ratio == 1.0
+        assert tps == 0.0  # can't compute throughput with zero duration
+
+    def test_none_metrics_ignored(self, slo):
+        # Curl benchmark passes None for ttft and itl — should still meet SLO
+        # if the latency metric is OK.
+        requests = [(None, None, 1000, 100), (None, None, 35000, 100)]
+        ratio, tps = slo.compute_goodput(requests, duration_s=10.0)
+        assert ratio == 0.5
+        assert tps == 10.0
