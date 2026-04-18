@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 
@@ -169,7 +168,8 @@ class MetricsCollector:
         metrics: dict[str, float] = {}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{base_url}/metrics", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                timeout = aiohttp.ClientTimeout(total=5)
+                async with session.get(f"{base_url}/metrics", timeout=timeout) as resp:
                     if resp.status != 200:
                         return metrics
                     text = await resp.text()
@@ -180,35 +180,35 @@ class MetricsCollector:
         return metrics
 
     def _parse_prometheus(self, text: str) -> dict[str, float]:
-        """Parse Prometheus exposition format for vLLM metrics."""
+        """Parse the subset of vLLM's Prometheus metrics that we consume.
+
+        Currently only ``vllm:gpu_cache_usage_perc`` (KV-cache utilization
+        as a 0-1 fraction) is extracted. An earlier version of this
+        parser tried to populate ``gpu_memory_peak_mb`` from the same
+        metric, which was a copy-paste bug — vLLM 0.19 does not expose
+        absolute peak GPU memory in MB via /metrics, so there is no
+        correct source to parse. Leaving the field unset is more honest
+        than fabricating a value.
+        """
         metrics: dict[str, float] = {}
-
-        patterns = {
-            "gpu_memory_peak_mb": r"vllm:gpu_cache_usage_perc\s+(\d+\.?\d*)",
-            "kv_cache_utilization": r"vllm:gpu_cache_usage_perc\s+(\d+\.?\d*)",
-        }
-
-        # Look for specific vLLM metrics
-        for line in text.split("\n"):
-            line = line.strip()
-            if line.startswith("#") or not line:
+        for raw in text.split("\n"):
+            line = raw.strip()
+            if not line or line.startswith("#"):
                 continue
-
             if "gpu_cache_usage_perc" in line:
                 match = re.search(r"(\d+\.?\d*)\s*$", line)
                 if match:
                     metrics["kv_cache_utilization"] = float(match.group(1))
-
-            if "num_requests_running" in line:
-                match = re.search(r"(\d+\.?\d*)\s*$", line)
-                if match:
-                    metrics["running_requests"] = float(match.group(1))
-
         return metrics
 
-    def update_from_server(self, metrics: BenchmarkMetrics, server_metrics: dict[str, float]) -> None:
-        """Update BenchmarkMetrics with server-side metrics."""
+    def update_from_server(
+        self, metrics: BenchmarkMetrics, server_metrics: dict[str, float],
+    ) -> None:
+        """Update BenchmarkMetrics with server-side metrics.
+
+        Only kv_cache_utilization is available from vLLM 0.19's /metrics
+        endpoint. gpu_memory_peak_mb stays None by design — see
+        _parse_prometheus for details.
+        """
         if "kv_cache_utilization" in server_metrics:
             metrics.kv_cache_utilization = server_metrics["kv_cache_utilization"]
-        if "gpu_memory_peak_mb" in server_metrics:
-            metrics.gpu_memory_peak_mb = server_metrics["gpu_memory_peak_mb"]
