@@ -257,13 +257,7 @@ class ExperimentRunner:
 
         for trial_id in range(budget):
             trial_start = time.monotonic()
-            config = self.optimizer.ask()
-            config = fix_serving_config(
-                config,
-                vram_gb=self.vram_gb,
-                kv_gb_per_token=self.kv_gb_per_token,
-                model_footprint_gb=self.model_footprint_gb,
-            )
+            config = self.next_config()
 
             logger.info(
                 "Trial %d/%d [%s]: %s",
@@ -272,7 +266,7 @@ class ExperimentRunner:
                  if k in ("quantization", "max_num_seqs", "gpu_memory_utilization")},
             )
 
-            result = self._evaluate(config, trial_id)
+            result = self.evaluate(config, trial_id)
             # Always compute utility so we can report it alongside goodput.
             # In maximize_utility mode, also swap objective_value so the
             # optimizer's best-feasible ranking (which reads objective_value)
@@ -323,10 +317,28 @@ class ExperimentRunner:
             s["wasted_s"], best_goodput,
         )
 
-    def _evaluate(self, config: dict[str, Any], trial_id: int) -> EvalResult:
+    def next_config(self) -> dict[str, Any]:
+        """Ask the optimizer for the next config and apply fix_serving_config.
+
+        External orchestrators (e.g. scripts/run_multiseed.py) that drive
+        trials by hand can use this instead of duplicating the fix-up
+        parameters (vram_gb, kv_gb_per_token, model_footprint_gb) that
+        run() applies internally.
+        """
+        config = self.optimizer.ask()
+        return fix_serving_config(
+            config,
+            vram_gb=self.vram_gb,
+            kv_gb_per_token=self.kv_gb_per_token,
+            model_footprint_gb=self.model_footprint_gb,
+        )
+
+    def evaluate(self, config: dict[str, Any], trial_id: int) -> EvalResult:
         """Evaluate a single serving configuration.
 
         Full lifecycle: start server -> benchmark -> collect metrics -> stop.
+        Public so external orchestrators can drive the ask/tell loop
+        themselves (e.g. when interleaving multiple optimizer/seed pairs).
         """
         result = EvalResult()
         eval_start = time.monotonic()
@@ -419,12 +431,15 @@ class ExperimentRunner:
             result.request_latency_p50_ms = metrics.request_latency_p50
             result.request_latency_p95_ms = metrics.request_latency_p95
             result.request_latency_p99_ms = metrics.request_latency_p99
+            result.request_latency_mean_ms = metrics.request_latency_mean
             result.tokens_per_sec = metrics.tokens_per_sec
             result.requests_per_sec = metrics.requests_per_sec
+            result.total_output_tokens = metrics.total_output_tokens or None
             result.goodput_tokens_per_sec = metrics.goodput_tokens_per_sec
             result.goodput_ratio = metrics.goodput_ratio
             result.gpu_memory_peak_mb = metrics.gpu_memory_peak_mb
             result.kv_cache_utilization = metrics.kv_cache_utilization
+            result.peak_concurrency = metrics.peak_concurrency
 
             # Set objective value (goodput)
             result.objective_value = metrics.goodput_tokens_per_sec or 0.0

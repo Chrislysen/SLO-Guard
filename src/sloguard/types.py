@@ -46,13 +46,16 @@ class EvalResult:
     request_latency_p50_ms: float | None = None
     request_latency_p95_ms: float | None = None
     request_latency_p99_ms: float | None = None
+    request_latency_mean_ms: float | None = None
     tokens_per_sec: float | None = None
     requests_per_sec: float | None = None
+    total_output_tokens: int | None = None
     goodput_tokens_per_sec: float | None = None
     goodput_ratio: float | None = None  # fraction of requests meeting all SLOs
     gpu_memory_peak_mb: float | None = None
     gpu_memory_allocated_mb: float | None = None
     kv_cache_utilization: float | None = None
+    peak_concurrency: int | None = None  # max in-flight load-gen requests
     server_startup_time_s: float | None = None
     # Wall-clock-aware utility score, always computed alongside goodput.
     # In "maximize_utility" optimizer mode, objective_value is swapped

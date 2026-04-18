@@ -33,6 +33,7 @@ class BenchmarkMetrics:
     request_latency_p50: float | None = None
     request_latency_p95: float | None = None
     request_latency_p99: float | None = None
+    request_latency_mean: float | None = None  # arithmetic mean for compact logging
 
     # Throughput
     tokens_per_sec: float | None = None
@@ -120,6 +121,7 @@ class MetricsCollector:
             metrics.request_latency_p50 = float(np.percentile(latency_values, 50))
             metrics.request_latency_p95 = float(np.percentile(latency_values, 95))
             metrics.request_latency_p99 = float(np.percentile(latency_values, 99))
+            metrics.request_latency_mean = float(np.mean(latency_values))
 
         # Throughput
         total_tokens = sum(r.output_tokens for r in successful)
