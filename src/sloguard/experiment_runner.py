@@ -86,6 +86,32 @@ def create_optimizer(
     )
 
 
+def summarize_results(results: list[EvalResult], budget: int) -> dict[str, float]:
+    """Aggregate counts + wasted-seconds from a list of EvalResults.
+
+    Crashed and infeasible trials are "wasted" budget — surfacing them
+    explicitly tells you whether the search space is too wide (high crash
+    rate) or the SLOs are too tight (high infeasible rate).
+    """
+    n_crashed = sum(1 for r in results if r.crashed)
+    n_feasible = sum(1 for r in results if r.feasible and not r.crashed)
+    # An "evaluated" trial is one whose result we recorded. Anything in the
+    # budget that wasn't evaluated counts as infeasible too (e.g. an early
+    # abort would leave gaps).
+    n_evaluated = len(results)
+    n_infeasible = max(0, budget - n_crashed - n_feasible)
+    wasted_s = sum(r.eval_time_s for r in results if r.crashed or not r.feasible)
+    return {
+        "evaluated": n_evaluated,
+        "feasible": n_feasible,
+        "crashed": n_crashed,
+        "infeasible": n_infeasible,
+        "wasted_s": wasted_s,
+        "crashed_pct": (n_crashed / budget * 100) if budget else 0.0,
+        "infeasible_pct": (n_infeasible / budget * 100) if budget else 0.0,
+    }
+
+
 def _benchmark_worker(
     queue: multiprocessing.Queue,
     workload_mode: str,
@@ -225,13 +251,26 @@ class ExperimentRunner:
             )
 
         elapsed = time.monotonic() - start_time
-        logger.info(
-            "Experiment %s complete in %.1fs. Best feasible: %s",
-            self.experiment_id, elapsed,
-            self.optimizer.best_feasible() is not None,
-        )
-
+        self._log_summary(budget, elapsed)
         return self.optimizer.best_feasible()
+
+    def _log_summary(self, budget: int, elapsed_s: float) -> None:
+        """Log a one-line summary of how the budget was spent."""
+        best = self.optimizer.best_feasible()
+        best_goodput = (
+            f"{best[1].objective_value:.1f} tok/s" if best else "none"
+        )
+        s = summarize_results([r for _, r in self.results], budget)
+        logger.info(
+            "Experiment %s complete in %.1fs | "
+            "feasible=%d/%d | crashed=%d/%d (%.0f%%) | infeasible=%d/%d (%.0f%%) | "
+            "wasted=%.1fs | best_goodput=%s",
+            self.experiment_id, elapsed_s,
+            s["feasible"], budget,
+            s["crashed"], budget, s["crashed_pct"],
+            s["infeasible"], budget, s["infeasible_pct"],
+            s["wasted_s"], best_goodput,
+        )
 
     def _evaluate(self, config: dict[str, Any], trial_id: int) -> EvalResult:
         """Evaluate a single serving configuration.
