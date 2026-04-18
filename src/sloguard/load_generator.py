@@ -21,6 +21,8 @@ from typing import Any
 
 import aiohttp
 
+from sloguard.types import TimeoutConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,27 +87,29 @@ class LoadGenerator:
         base_url: str,
         workload: WorkloadConfig,
         seed: int = 42,
+        timeouts: TimeoutConfig | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.workload = workload
         self.rng = random.Random(seed)
         self.results: list[RequestResult] = []
+        self.timeouts = timeouts or TimeoutConfig()
 
-    async def run(self, trial_timeout: float = 180.0) -> list[RequestResult]:
+    async def run(self, trial_timeout: float | None = None) -> list[RequestResult]:
         """Run the load generation and return per-request results.
 
         Args:
             trial_timeout: Hard timeout for the entire trial in seconds.
-                If exceeded, returns whatever results were collected.
+                Defaults to the runner's TimeoutConfig.per_trial_s. If the
+                cap is exceeded, returns whatever results were collected.
         """
+        cap = trial_timeout if trial_timeout is not None else self.timeouts.per_trial_s
         try:
-            return await asyncio.wait_for(
-                self._run_inner(), timeout=trial_timeout,
-            )
+            return await asyncio.wait_for(self._run_inner(), timeout=cap)
         except asyncio.TimeoutError:
             logger.warning(
                 "Trial timeout after %.0fs — returning %d results collected so far",
-                trial_timeout, len(self.results),
+                cap, len(self.results),
             )
             return self.results
 
@@ -119,6 +123,7 @@ class LoadGenerator:
             total=self.workload.timeout_per_request,
             sock_read=30,  # kill stuck streaming reads after 30s of silence
         )
+        per_req_cap = self.timeouts.per_request_s
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             for i in range(self.workload.num_requests):
                 if i > 0 and i - 1 < len(inter_arrival_times):
@@ -131,11 +136,10 @@ class LoadGenerator:
                     self.workload.output_len_min, self.workload.output_len_max
                 )
 
-                # Hard per-request timeout of 60s
                 try:
                     result = await asyncio.wait_for(
                         self._send_request(session, i, prompt_len, output_len),
-                        timeout=60.0,
+                        timeout=per_req_cap,
                     )
                 except asyncio.TimeoutError:
                     result = RequestResult(
@@ -144,7 +148,7 @@ class LoadGenerator:
                         output_tokens=0,
                         send_time=time.monotonic(),
                         end_time=time.monotonic(),
-                        error="Hard timeout after 60s",
+                        error=f"Hard timeout after {per_req_cap:.0f}s",
                         success=False,
                     )
 
@@ -274,12 +278,13 @@ class BurstGenerator(LoadGenerator):
         base_url: str,
         workload: WorkloadConfig,
         seed: int = 42,
+        timeouts: TimeoutConfig | None = None,
         baseline_rate: float | None = None,
         peak_rate: float | None = None,
         burst_start_frac: float = 0.3,
         burst_end_frac: float = 0.7,
     ):
-        super().__init__(base_url, workload, seed)
+        super().__init__(base_url, workload, seed, timeouts)
         self.baseline_rate = baseline_rate or workload.request_rate
         self.peak_rate = peak_rate or workload.request_rate * 5.0
         self.burst_start_frac = burst_start_frac
@@ -321,10 +326,11 @@ class TraceReplayGenerator(LoadGenerator):
         workload: WorkloadConfig,
         trace_path: str | Path,
         seed: int = 42,
+        timeouts: TimeoutConfig | None = None,
         time_column: str = "inter_arrival_s",
         scale_factor: float = 1.0,
     ):
-        super().__init__(base_url, workload, seed)
+        super().__init__(base_url, workload, seed, timeouts)
         self.trace_path = Path(trace_path)
         self.time_column = time_column
         self.scale_factor = scale_factor
@@ -383,6 +389,7 @@ def create_generator(
     base_url: str,
     workload: WorkloadConfig,
     seed: int = 42,
+    timeouts: TimeoutConfig | None = None,
     **kwargs: Any,
 ) -> LoadGenerator:
     """Factory for load generators.
@@ -392,14 +399,20 @@ def create_generator(
         base_url: vLLM server URL
         workload: Workload configuration
         seed: Random seed
+        timeouts: Optional TimeoutConfig — defaults to TimeoutConfig() inside
+            each generator if not supplied
         **kwargs: Extra args for specific generator types
     """
     if mode == "fixed":
-        return FixedRateGenerator(base_url, workload, seed)
+        return FixedRateGenerator(base_url, workload, seed, timeouts)
     elif mode == "burst":
-        return BurstGenerator(base_url, workload, seed, **kwargs)
+        return BurstGenerator(base_url, workload, seed, timeouts, **kwargs)
     elif mode == "trace":
         trace_path = kwargs.pop("trace_path", "trace.csv")
-        return TraceReplayGenerator(base_url, workload, trace_path, seed, **kwargs)
+        return TraceReplayGenerator(
+            base_url, workload, trace_path, seed, timeouts, **kwargs,
+        )
     else:
-        raise ValueError(f"Unknown load generator mode: {mode!r}. Use 'fixed', 'burst', or 'trace'")
+        raise ValueError(
+            f"Unknown load generator mode: {mode!r}. Use 'fixed', 'burst', or 'trace'",
+        )

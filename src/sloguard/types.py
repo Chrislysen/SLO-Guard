@@ -129,3 +129,21 @@ class TrialRecord:
     cumulative_crashes: int
     cumulative_infeasible: int
     wall_clock_s: float
+
+
+@dataclass
+class TimeoutConfig:
+    """Timeouts (seconds) for the full trial pipeline.
+
+    These were previously scattered as magic numbers across load_generator,
+    experiment_runner, and the curl benchmark. Centralizing them lets
+    workloads tune the cadence — e.g. interactive workloads can set
+    per_request_s=10 to fail fast, batch can set per_trial_s=600.
+
+    All values are seconds.
+    """
+
+    per_request_s: float = 60.0     # hard cap on a single inference request
+    per_trial_s: float = 180.0      # whole-trial cap (benchmark subprocess hard-kill)
+    server_start_s: float = 120.0   # vLLM server startup polling deadline
+    preflight_s: float = 30.0       # one-shot health request after server up

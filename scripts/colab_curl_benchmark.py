@@ -47,7 +47,7 @@ from sloguard.gpu_profile import (
 from sloguard.server_manager import VLLMServerManager
 from sloguard.slo_contract import SLOContract
 from sloguard.trial_logger import TrialLogger
-from sloguard.types import EvalResult, ServingTrialResult
+from sloguard.types import EvalResult, ServingTrialResult, TimeoutConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -202,6 +202,7 @@ def benchmark_with_curl(
     output_len_min: int,
     output_len_max: int,
     seed: int,
+    timeouts: TimeoutConfig,
 ) -> list[dict]:
     """Run a benchmark: send num_requests via curl at target rate.
 
@@ -217,7 +218,7 @@ def benchmark_with_curl(
         prompt = make_prompt(rng, prompt_len)
 
         send_time = time.monotonic()
-        r = curl_request(url, model, prompt, output_len)
+        r = curl_request(url, model, prompt, output_len, timeout=timeouts.per_request_s)
         r["request_id"] = i
         r["prompt_tokens"] = prompt_len
         r["send_time"] = send_time
@@ -313,14 +314,14 @@ def compute_metrics(
     return eval_result
 
 
-def preflight_check(base_url: str, model: str) -> bool:
+def preflight_check(base_url: str, model: str, timeouts: TimeoutConfig) -> bool:
     """Send a single tiny request to verify the engine works."""
     r = curl_request(
         f"{base_url}/v1/chat/completions",
         model=model,
         prompt="Hi",
         max_tokens=1,
-        timeout=30.0,
+        timeout=timeouts.preflight_s,
     )
     if not r["success"]:
         logger.warning("Pre-flight failed: %s", r.get("error"))
@@ -344,7 +345,15 @@ def run_experiment(args: argparse.Namespace) -> None:
     space = build_serving_space()
     constraints = slo.to_constraints_dict()
     optimizer = create_optimizer(args.optimizer, space, constraints, args.budget, args.seed)
-    server = VLLMServerManager(model=args.model, port=args.port)
+    timeouts = TimeoutConfig(
+        per_request_s=args.timeout_per_request_s,
+        per_trial_s=args.timeout_per_trial_s,
+        server_start_s=args.timeout_server_start_s,
+        preflight_s=args.timeout_preflight_s,
+    )
+    server = VLLMServerManager(
+        model=args.model, port=args.port, startup_timeout=timeouts.server_start_s,
+    )
     classifier = CrashClassifier()  # noqa: F841 — kept for parity with experiment_runner
 
     # GPU + model profile so the memory guard scales to the actual hardware
@@ -411,7 +420,7 @@ def run_experiment(args: argparse.Namespace) -> None:
         eval_result.server_startup_time_s = server.startup_time
 
         # Pre-flight
-        if not preflight_check(server.base_url, args.model):
+        if not preflight_check(server.base_url, args.model, timeouts):
             crash_type = classifier.classify(stderr=server.stderr_output)
             eval_result.crashed = True
             eval_result.crash_type = crash_type.value if crash_type.value != "healthy" else "startup_failure"
@@ -438,6 +447,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             output_len_min=64,
             output_len_max=256,
             seed=args.seed + trial_id,
+            timeouts=timeouts,
         )
 
         # No results = server died
@@ -601,6 +611,15 @@ def main():
     parser.add_argument("--output", default="results/curl_run/")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--verbose", "-v", action="store_true")
+    # Timeouts (seconds)
+    parser.add_argument("--timeout-per-request-s", type=float, default=60.0,
+                        help="Per-request hard timeout")
+    parser.add_argument("--timeout-per-trial-s", type=float, default=180.0,
+                        help="Whole-trial benchmark timeout (subprocess hard-kill)")
+    parser.add_argument("--timeout-server-start-s", type=float, default=120.0,
+                        help="vLLM startup polling deadline")
+    parser.add_argument("--timeout-preflight-s", type=float, default=30.0,
+                        help="One-shot preflight health request timeout")
     args = parser.parse_args()
 
     if args.verbose:

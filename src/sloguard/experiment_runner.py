@@ -42,7 +42,7 @@ from sloguard.optimizer.tba_tpe_hybrid import TBATPEHybrid
 from sloguard.server_manager import VLLMServerManager
 from sloguard.slo_contract import SLOContract
 from sloguard.trial_logger import TrialLogger
-from sloguard.types import EvalResult, ServingTrialResult
+from sloguard.types import EvalResult, ServingTrialResult, TimeoutConfig
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def _benchmark_worker(
     workload: Any,
     seed: int,
     workload_kwargs: dict[str, Any],
-    trial_timeout: float,
+    timeouts: TimeoutConfig,
 ) -> None:
     """Top-level function for the benchmark subprocess.
 
@@ -132,9 +132,10 @@ def _benchmark_worker(
             base_url=base_url,
             workload=workload,
             seed=seed,
+            timeouts=timeouts,
             **workload_kwargs,
         )
-        results = asyncio.run(gen.run(trial_timeout=trial_timeout))
+        results = asyncio.run(gen.run(trial_timeout=timeouts.per_trial_s))
         queue.put(results)
     except Exception as e:
         logging.getLogger(__name__).error("Benchmark worker error: %s", e)
@@ -168,6 +169,7 @@ class ExperimentRunner:
         workload_mode: str = "fixed",
         workload_kwargs: dict[str, Any] | None = None,
         benchmark_duration_s: float = 60.0,
+        timeouts: TimeoutConfig | None = None,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -181,8 +183,11 @@ class ExperimentRunner:
         self.workload_mode = workload_mode
         self.workload_kwargs = workload_kwargs or {}
         self.benchmark_duration_s = benchmark_duration_s
+        self.timeouts = timeouts or TimeoutConfig()
 
-        self.server = VLLMServerManager(model=model, port=port)
+        self.server = VLLMServerManager(
+            model=model, port=port, startup_timeout=self.timeouts.server_start_s,
+        )
         self.classifier = CrashClassifier()
         self.metrics_collector = MetricsCollector(slo_contract=slo)
 
@@ -316,10 +321,7 @@ class ExperimentRunner:
             # asyncio.wait_for can't interrupt aiohttp's streaming reads,
             # and ThreadPoolExecutor.__exit__ waits for the thread, so the
             # only reliable backstop is multiprocessing + process.kill().
-            request_results = self._run_benchmark_subprocess(
-                trial_id=trial_id,
-                trial_timeout=180.0,
-            )
+            request_results = self._run_benchmark_subprocess(trial_id=trial_id)
 
             # If no results at all, treat as crash
             if not request_results:
@@ -405,17 +407,14 @@ class ExperimentRunner:
         result.eval_time_s = time.monotonic() - eval_start
         return result
 
-    def _run_benchmark_subprocess(
-        self,
-        trial_id: int,
-        trial_timeout: float,
-    ) -> list:
+    def _run_benchmark_subprocess(self, trial_id: int) -> list:
         """Run load generation in a subprocess that can be hard-killed.
 
         Returns list of RequestResult (possibly empty on timeout).
         """
-        from sloguard.load_generator import RequestResult
+        from sloguard.load_generator import RequestResult  # noqa: F401
 
+        trial_timeout = self.timeouts.per_trial_s
         queue: multiprocessing.Queue = multiprocessing.Queue()
         proc = multiprocessing.Process(
             target=_benchmark_worker,
@@ -426,7 +425,7 @@ class ExperimentRunner:
                 self.workload,
                 self.optimizer.seed + trial_id,
                 self.workload_kwargs,
-                trial_timeout,
+                self.timeouts,
             ),
             daemon=True,
         )
@@ -470,19 +469,21 @@ class ExperimentRunner:
             "stream": False,
         })
 
+        max_time = self.timeouts.preflight_s
         try:
             proc = subprocess.run(
                 [
                     "curl", "-s",
                     "--connect-timeout", "5",
-                    "--max-time", "30",
+                    "--max-time", str(int(max_time)),
                     "-H", "Content-Type: application/json",
                     "-d", payload,
                     url,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=35,
+                # +5 so curl's own --max-time fires first and we get useful stderr
+                timeout=max_time + 5,
             )
             if proc.returncode != 0:
                 logger.warning("Pre-flight curl failed (exit %d): %s",
@@ -495,9 +496,9 @@ class ExperimentRunner:
                 return False
             return True
         except subprocess.TimeoutExpired:
-            logger.warning("Pre-flight hard timeout after 35s")
+            logger.warning("Pre-flight hard timeout after %.0fs", max_time + 5)
             return False
-        except Exception as e:
+        except (subprocess.SubprocessError, json_mod.JSONDecodeError, OSError) as e:
             logger.warning("Pre-flight check failed: %s", e)
             return False
 
