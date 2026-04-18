@@ -17,8 +17,8 @@ from typing import Any
 
 import aiohttp
 
-from sloguard.config_space import SearchSpace, build_serving_space, fix_serving_config
-from sloguard.crash_classifier import CrashClassifier, CrashType
+from sloguard.config_space import SearchSpace, fix_serving_config
+from sloguard.crash_classifier import CrashClassifier
 from sloguard.gpu_profile import (
     DEFAULT_VRAM_GB,
     detect_gpu_vram_gb,
@@ -26,13 +26,7 @@ from sloguard.gpu_profile import (
     log_gpu_info,
     model_footprint_gb_for,
 )
-from sloguard.load_generator import (
-    BurstGenerator,
-    FixedRateGenerator,
-    TraceReplayGenerator,
-    WorkloadConfig,
-    create_generator,
-)
+from sloguard.load_generator import WorkloadConfig, create_generator
 from sloguard.metrics_collector import MetricsCollector
 from sloguard.optimizer.base import BaseOptimizer
 from sloguard.optimizer.optuna_tpe import OptunaColdTPE
