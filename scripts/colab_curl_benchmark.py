@@ -36,7 +36,12 @@ import numpy as np
 # SLO-Guard imports
 from sloguard.config_space import build_serving_space, fix_serving_config
 from sloguard.crash_classifier import CrashClassifier
-from sloguard.experiment_runner import create_optimizer
+from sloguard.experiment_runner import (
+    OBJECTIVE_GOODPUT,
+    OBJECTIVE_UTILITY,
+    compute_utility,
+    create_optimizer,
+)
 from sloguard.gpu_profile import (
     DEFAULT_VRAM_GB,
     detect_gpu_vram_gb,
@@ -356,6 +361,17 @@ def run_experiment(args: argparse.Namespace) -> None:
     )
     classifier = CrashClassifier()  # noqa: F841 — kept for parity with experiment_runner
 
+    def _tell(config: dict, eval_result: EvalResult) -> None:
+        """Compute utility (always) + swap in utility mode, then tell the optimizer."""
+        eval_result.utility_value = compute_utility(
+            eval_result,
+            crash_penalty=args.crash_penalty,
+            time_penalty=args.time_penalty,
+        )
+        if args.objective == OBJECTIVE_UTILITY:
+            eval_result.objective_value = eval_result.utility_value
+        optimizer.tell(config, eval_result)
+
     # GPU + model profile so the memory guard scales to the actual hardware
     log_gpu_info(args.model)
     detected_vram = detect_gpu_vram_gb()
@@ -408,7 +424,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.error_msg = server.stderr_output[:500]
             eval_result.server_startup_time_s = server.startup_time
             eval_result.eval_time_s = time.monotonic() - trial_start
-            optimizer.tell(config, eval_result)
+            _tell(config, eval_result)
             _log_trial(
                 trial_logger, trial_id, experiment_id, config,
                 eval_result, args, slo, optimizer, phase,
@@ -427,7 +443,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.error_msg = "Pre-flight failed: engine started but cannot serve"
             eval_result.eval_time_s = time.monotonic() - trial_start
             server.stop()
-            optimizer.tell(config, eval_result)
+            _tell(config, eval_result)
             _log_trial(
                 trial_logger, trial_id, experiment_id, config,
                 eval_result, args, slo, optimizer, phase,
@@ -457,7 +473,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.error_msg = "No successful requests — server unresponsive"
             eval_result.eval_time_s = time.monotonic() - trial_start
             server.stop()
-            optimizer.tell(config, eval_result)
+            _tell(config, eval_result)
             _log_trial(
                 trial_logger, trial_id, experiment_id, config,
                 eval_result, args, slo, optimizer, phase,
@@ -487,7 +503,7 @@ def run_experiment(args: argparse.Namespace) -> None:
             logger.debug("Could not fetch /metrics: %s", e)
 
         server.stop()
-        optimizer.tell(config, eval_result)
+        _tell(config, eval_result)
         _log_trial(
             trial_logger, trial_id, experiment_id, config,
             eval_result, args, slo, optimizer, phase,
@@ -620,6 +636,20 @@ def main():
                         help="vLLM startup polling deadline")
     parser.add_argument("--timeout-preflight-s", type=float, default=30.0,
                         help="One-shot preflight health request timeout")
+    # Objective: goodput (default) or wall-clock-aware utility
+    parser.add_argument(
+        "--objective", default=OBJECTIVE_GOODPUT,
+        choices=[OBJECTIVE_GOODPUT, OBJECTIVE_UTILITY],
+        help="Optimizer objective (default: goodput)",
+    )
+    parser.add_argument(
+        "--crash-penalty", type=float, default=1000.0,
+        help="Utility penalty for a crashed trial, in goodput units (default: 1000)",
+    )
+    parser.add_argument(
+        "--time-penalty", type=float, default=1.0,
+        help="Utility penalty per second of tuning cost (default: 1.0 tok/s per s)",
+    )
     args = parser.parse_args()
 
     if args.verbose:

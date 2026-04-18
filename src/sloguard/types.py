@@ -54,6 +54,10 @@ class EvalResult:
     gpu_memory_allocated_mb: float | None = None
     kv_cache_utilization: float | None = None
     server_startup_time_s: float | None = None
+    # Wall-clock-aware utility score, always computed alongside goodput.
+    # In "maximize_utility" optimizer mode, objective_value is swapped
+    # with utility_value so the optimizer ranks on it directly.
+    utility_value: float | None = None
 
 
 @dataclass

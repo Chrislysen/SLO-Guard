@@ -80,6 +80,41 @@ def create_optimizer(
     )
 
 
+# Optimizer objective modes.
+OBJECTIVE_GOODPUT = "maximize_goodput"
+OBJECTIVE_UTILITY = "maximize_utility"
+
+# Default weights for the utility score. λ₁ is the goodput-unit penalty for a
+# crash; λ₂ converts tuning seconds into goodput units (1s ≈ 1 tok/s).
+DEFAULT_CRASH_PENALTY = 1000.0
+DEFAULT_TIME_PENALTY = 1.0
+
+
+def compute_utility(
+    result: EvalResult,
+    crash_penalty: float = DEFAULT_CRASH_PENALTY,
+    time_penalty: float = DEFAULT_TIME_PENALTY,
+) -> float:
+    """Wall-clock-aware utility score.
+
+    U(θ) = goodput - λ₁·crash_flag - λ₂·(startup + eval)
+
+    Crashed trials get U = -λ₁ - λ₂·tuning_cost, which is finite so the
+    optimizer can rank "fast crash" above "slow crash" — the right
+    incentive when we want the search to fail fast.
+
+    Feasible / infeasible-but-completed trials get U = goodput - λ₂·cost
+    using goodput_tokens_per_sec (0 if not measured).
+    """
+    startup = result.server_startup_time_s or 0.0
+    eval_s = result.eval_time_s or 0.0
+    time_cost = time_penalty * (startup + eval_s)
+    if result.crashed:
+        return -crash_penalty - time_cost
+    goodput = result.goodput_tokens_per_sec or 0.0
+    return goodput - time_cost
+
+
 def summarize_results(results: list[EvalResult], budget: int) -> dict[str, float]:
     """Aggregate counts + wasted-seconds from a list of EvalResults.
 
@@ -164,6 +199,9 @@ class ExperimentRunner:
         workload_kwargs: dict[str, Any] | None = None,
         benchmark_duration_s: float = 60.0,
         timeouts: TimeoutConfig | None = None,
+        objective: str = OBJECTIVE_GOODPUT,
+        crash_penalty: float = DEFAULT_CRASH_PENALTY,
+        time_penalty: float = DEFAULT_TIME_PENALTY,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -178,6 +216,11 @@ class ExperimentRunner:
         self.workload_kwargs = workload_kwargs or {}
         self.benchmark_duration_s = benchmark_duration_s
         self.timeouts = timeouts or TimeoutConfig()
+        if objective not in (OBJECTIVE_GOODPUT, OBJECTIVE_UTILITY):
+            raise ValueError(f"unknown objective: {objective!r}")
+        self.objective = objective
+        self.crash_penalty = crash_penalty
+        self.time_penalty = time_penalty
 
         self.server = VLLMServerManager(
             model=model, port=port, startup_timeout=self.timeouts.server_start_s,
@@ -230,6 +273,15 @@ class ExperimentRunner:
             )
 
             result = self._evaluate(config, trial_id)
+            # Always compute utility so we can report it alongside goodput.
+            # In maximize_utility mode, also swap objective_value so the
+            # optimizer's best-feasible ranking (which reads objective_value)
+            # picks trials with the best utility instead of raw goodput.
+            result.utility_value = compute_utility(
+                result, self.crash_penalty, self.time_penalty,
+            )
+            if self.objective == OBJECTIVE_UTILITY:
+                result.objective_value = result.utility_value
             self.optimizer.tell(config, result)
             self.results.append((config, result))
 
