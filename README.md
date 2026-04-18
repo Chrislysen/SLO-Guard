@@ -183,16 +183,44 @@ make smoke       # CPU-only integration test
 
 ## Results
 
-First published benchmark: Qwen2-1.5B on Colab A100 40GB, 15 trials per
-optimizer, curl-based load generator (5 requests/trial). Full writeup in
-[`findings.md`](findings.md). Regenerate with:
+Qwen2-1.5B on Colab A100 40GB, 15 trials per run, curl-based load
+generator (5 requests/trial). Full writeup + limitations in
+[`findings.md`](findings.md).
+
+### Multi-seed comparison (5 seeds × 2 optimizers × 15 trials = 150 trials)
+
+Aggregates over seeds 42, 142, 242, 342, 442. Numbers regenerate with
+`python scripts/compute_multiseed_stats.py`.
+
+| Metric | Random (n=5) | TBA-TPE (n=5) | Mann-Whitney p |
+|---|---|---|---|
+| Fast-cluster trials / 15 | 7.40 ± 2.51 | 10.60 ± 0.89 | **0.008** |
+| Post-hit consistency | 0.539 ± 0.224 | 0.876 ± 0.123 | **0.010** |
+| Best latency (ms) | 431.11 ± 1.74 | 431.57 ± 1.90 | 0.84 (tied) |
+| Feasibility | 75 / 75 | 75 / 75 | — |
+| Crashes | 0 | 0 | — |
+
+**Best latency is statistically indistinguishable between optimizers
+(Mann-Whitney two-sided p=0.84).** The win is in budget consistency:
+TBA-TPE lands ~3 more trials in the fast cluster per run on average, and
+its cross-seed variance on that metric is 2.8× tighter than Random's.
+
+<p align="center">
+  <img src="figures/multiseed/multiseed_fastcluster_box.png" width="48%" alt="Fast-cluster count across 5 seeds — p=0.008">
+  <img src="figures/multiseed/multiseed_convergence.png"    width="48%" alt="Best-so-far latency across 5 seeds">
+</p>
+
+Regenerate all four multi-seed plots:
 
 ```bash
-python scripts/plot_comparison.py \
-    --random  results/colab_random/random_run.jsonl \
-    --tba-tpe results/tba_tpe/results.jsonl \
-    --output  figures/comparison/
+python scripts/plot_comparison.py --multiseed results/multiseed/
 ```
+
+### Single-seed pilot (for reference)
+
+The initial single-seed run that motivated the multi-seed study. The
+headline finding — bimodal latency driven by `enforce_eager` — held up
+across all 10 runs.
 
 | Metric | Random | TBA-TPE |
 |---|---|---|
@@ -201,11 +229,6 @@ python scripts/plot_comparison.py \
 | Best goodput (tok/s) | ~224 | 230 |
 | First fast-cluster hit | Trial 4 | Trial 7 |
 | Fast-cluster trials after first hit | 5 / 12 | 9 / 9 |
-
-The headline result is not peak goodput (close tie) but *consistency*:
-after TBA-TPE's phase handoff at trial 7, every remaining trial landed
-in the fast cluster; random search kept alternating between fast and
-slow configs through trial 15.
 
 <p align="center">
   <img src="figures/comparison/convergence.png"       width="48%" alt="Best-so-far latency convergence">
@@ -216,9 +239,15 @@ slow configs through trial 15.
   <img src="figures/comparison/goodput_comparison.png" width="48%" alt="Goodput per trial">
 </p>
 
-Limitations and caveats are in [`findings.md`](findings.md) — briefly:
-single model, single GPU, 15 trials, no cross-seed statistics, and a
-search space where one binary knob (`enforce_eager`) dominates.
+```bash
+python scripts/plot_comparison.py \
+    --random  results/colab_random/random_run.jsonl \
+    --tba-tpe results/tba_tpe/results.jsonl
+```
+
+Limitations are covered in [`findings.md`](findings.md): single model,
+single GPU, search space dominated by one binary knob, no wall-clock
+cost accounting.
 
 ## License
 
