@@ -183,7 +183,42 @@ make smoke       # CPU-only integration test
 
 ## Results
 
-*Results will be populated after running experiments.*
+First published benchmark: Qwen2-1.5B on Colab A100 40GB, 15 trials per
+optimizer, curl-based load generator (5 requests/trial). Full writeup in
+[`findings.md`](findings.md). Regenerate with:
+
+```bash
+python scripts/plot_comparison.py \
+    --random  results/colab_random/random_run.jsonl \
+    --tba-tpe results/tba_tpe/results.jsonl \
+    --output  figures/comparison/
+```
+
+| Metric | Random | TBA-TPE |
+|---|---|---|
+| Feasible trials | 14 / 15 | 15 / 15 |
+| Crashes | 1 | 0 |
+| Best goodput (tok/s) | ~224 | 230 |
+| First fast-cluster hit | Trial 4 | Trial 7 |
+| Fast-cluster trials after first hit | 5 / 12 | 9 / 9 |
+
+The headline result is not peak goodput (close tie) but *consistency*:
+after TBA-TPE's phase handoff at trial 7, every remaining trial landed
+in the fast cluster; random search kept alternating between fast and
+slow configs through trial 15.
+
+<p align="center">
+  <img src="figures/comparison/convergence.png"       width="48%" alt="Best-so-far latency convergence">
+  <img src="figures/comparison/phase_transition.png"  width="48%" alt="TBA-TPE explore → exploit handoff">
+</p>
+<p align="center">
+  <img src="figures/comparison/config_space.png"      width="48%" alt="Configuration space scatter">
+  <img src="figures/comparison/goodput_comparison.png" width="48%" alt="Goodput per trial">
+</p>
+
+Limitations and caveats are in [`findings.md`](findings.md) — briefly:
+single model, single GPU, 15 trials, no cross-seed statistics, and a
+search space where one binary knob (`enforce_eager`) dominates.
 
 ## License
 

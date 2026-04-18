@@ -1,0 +1,15 @@
+{"trial":1,"seed":42,"status":"crash"}
+{"trial":2,"seed":43,"status":"feasible","avg_latency_ms":518,"total_tokens":500}
+{"trial":3,"seed":44,"status":"feasible","avg_latency_ms":2043,"total_tokens":500}
+{"trial":4,"seed":45,"status":"crash"}
+{"trial":5,"seed":46,"status":"crash"}
+{"trial":6,"seed":47,"status":"feasible","avg_latency_ms":2106,"total_tokens":500}
+{"trial":7,"seed":48,"status":"feasible","avg_latency_ms":445,"total_tokens":500}
+{"trial":8,"seed":49,"status":"crash"}
+{"trial":9,"seed":50,"status":"feasible","avg_latency_ms":439,"total_tokens":500}
+{"trial":10,"seed":51,"status":"feasible","avg_latency_ms":443,"total_tokens":500}
+{"trial":11,"seed":52,"status":"feasible","avg_latency_ms":2095,"total_tokens":500}
+{"trial":12,"seed":53,"status":"feasible","avg_latency_ms":2101,"total_tokens":500}
+{"trial":13,"seed":54,"status":"feasible","avg_latency_ms":434,"total_tokens":500}
+{"trial":14,"seed":55,"status":"feasible","avg_latency_ms":453,"total_tokens":500}
+{"trial":15,"seed":56,"status":"feasible","avg_latency_ms":450,"total_tokens":500}

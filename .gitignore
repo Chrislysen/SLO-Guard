@@ -18,9 +18,25 @@ env/
 *.swp
 *.swo
 
-# Results and figures (regenerated)
-results/
-figures/
+# Results and figures — ignore everything by default, but track the
+# published benchmark runs and their figures for reproducibility.
+# Parent directories must be explicitly un-ignored for the file patterns
+# below to be evaluated (git skips descending into ignored directories).
+results/*
+!results/colab_random/
+results/colab_random/*
+!results/colab_random/random_run.jsonl
+!results/colab_random/early_run.jsonl
+!results/tba_tpe/
+results/tba_tpe/*
+!results/tba_tpe/results.jsonl
+figures/*
+!figures/comparison/
+figures/comparison/*
+!figures/comparison/convergence.png
+!figures/comparison/phase_transition.png
+!figures/comparison/config_space.png
+!figures/comparison/goodput_comparison.png
 
 # OS
 .DS_Store
