@@ -100,21 +100,20 @@ leading `2` is for K and V separately).
 
 ## Configuration Space
 
-SLO-Guard tunes 11 vLLM serving knobs:
+SLO-Guard tunes 8 vLLM serving knobs. Knobs that mostly cause crashes
+without meaningful performance variation (`block_size`, `swap_space`,
+`cpu-offload`) have been removed from the search space.
 
-| Knob | Type | Range |
-|------|------|-------|
-| `quantization` | categorical | fp16, awq, gptq, squeezellm |
-| `max_num_seqs` | integer (log) | 1 - 256 |
-| `max_num_batched_tokens` | integer (log) | 256 - 8192 |
-| `gpu_memory_utilization` | continuous | 0.50 - 0.95 |
-| `enforce_eager` | boolean | true, false |
-| `enable_chunked_prefill` | boolean | true, false |
-| `enable_prefix_caching` | boolean | true, false |
-| `block_size` | categorical | 8, 16, 32 |
-| `swap_space` | integer | 0 - 8 GB |
-| `max_model_len` | integer (log) | 512 - 4096 |
-| `dtype` | categorical | float16, bfloat16 |
+| Knob | Type | Range / Choices | Notes |
+|------|------|-----------------|-------|
+| `quantization` | categorical | `["fp16"]` by default | Pass `quantization_choices=` to `build_serving_space()` to widen |
+| `max_num_seqs` | integer (log) | 4 - 128 | |
+| `max_num_batched_tokens` | integer (log) | 512 - 8192 | Auto-bumped to ≥ max(`max_num_seqs`, `max_model_len`) |
+| `gpu_memory_utilization` | continuous | 0.60 - 0.95 | Lower bound is 0.60 to avoid wasting VRAM on dedicated GPUs |
+| `max_model_len` | integer (log) | 512 - 4096 | Capped by KV-cache budget — see [GPU Detection](#gpu-detection) |
+| `enforce_eager` | boolean | true / false | CUDA graphs vs eager |
+| `enable_chunked_prefill` | boolean | true / false | Conditional: only active when `enforce_eager == False` (vLLM 0.19 returns 500s otherwise) |
+| `enable_prefix_caching` | boolean | true / false | |
 
 ## Optimizers
 
