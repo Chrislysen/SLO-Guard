@@ -5,16 +5,19 @@ The KV-cache memory budget depends on:
   - Per-token KV size (varies by model: layers * kv_heads * head_dim * dtype_bytes)
   - Model footprint (weights + activations + framework overhead)
 
-We detect VRAM at runtime and look up a per-token KV size from a small
-registry of known models, falling back to a conservative default. Both
-values can be overridden via env vars for testing or unknown hardware.
+We detect VRAM at runtime, derive the per-token KV size and model
+footprint from the HF cache when possible (works for any downloaded
+model), and fall back to a small hand-tuned registry then a default.
+All values can be overridden via env vars.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,22 @@ _MODEL_FOOTPRINT_GB: dict[str, float] = {
 DEFAULT_KV_GB_PER_TOKEN = 0.000096
 DEFAULT_MODEL_FOOTPRINT_GB = 5.0
 DEFAULT_VRAM_GB = 40.0  # A100 40GB — the original SLO-Guard baseline
+
+# Bytes per element for common dtypes used in HF model configs.
+_DTYPE_BYTES: dict[str, int] = {
+    "float16": 2, "fp16": 2, "half": 2,
+    "bfloat16": 2, "bf16": 2,
+    "float32": 4, "fp32": 4, "float": 4,
+    "float64": 8, "fp64": 8, "double": 8,
+    "int8": 1, "uint8": 1,
+}
+
+# Slack on top of weight bytes to cover activations + framework overhead.
+# Picked to roughly match the hand-tuned registry footprints.
+_FOOTPRINT_SLACK = 1.4
+
+# Weight files to count when sizing a snapshot directory.
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth")
 
 
 def detect_gpu_vram_gb() -> float | None:
@@ -124,10 +143,109 @@ def detect_gpu_name() -> str | None:
     return None
 
 
+def _hf_cache_dirs() -> list[Path]:
+    """Return existing candidate HF Hub cache root directories."""
+    candidates: list[Path] = []
+    env_cache = os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if env_cache:
+        candidates.append(Path(env_cache))
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        candidates.append(Path(hf_home) / "hub")
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+    return [c for c in candidates if c.exists()]
+
+
+def _find_hf_snapshot(model_id: str) -> Path | None:
+    """Return the most recent snapshot directory for *model_id*, or None.
+
+    HF Hub layout: ``<cache>/models--<org>--<name>/snapshots/<commit>/...``
+    """
+    safe = "models--" + model_id.replace("/", "--")
+    for cache in _hf_cache_dirs():
+        snap_root = cache / safe / "snapshots"
+        if not snap_root.exists():
+            continue
+        snaps = [s for s in snap_root.iterdir() if s.is_dir()]
+        if not snaps:
+            continue
+        # Pick the most recently modified snapshot — usually the active one.
+        snaps.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return snaps[0]
+    return None
+
+
+def kv_gb_from_hf_config(model_id: str) -> float | None:
+    """Compute per-token KV size (GB) from the HF config.json for *model_id*.
+
+    Formula: ``2 (K + V) * num_hidden_layers * num_key_value_heads
+              * head_dim * dtype_bytes / 1e9``
+
+    Returns None when the model isn't cached or required fields are missing.
+    """
+    snap = _find_hf_snapshot(model_id)
+    if snap is None:
+        return None
+    cfg_path = snap / "config.json"
+    if not cfg_path.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("HF config.json parse failed for %s: %s", model_id, e)
+        return None
+
+    num_layers = cfg.get("num_hidden_layers")
+    num_kv_heads = cfg.get("num_key_value_heads") or cfg.get("num_attention_heads")
+    head_dim = cfg.get("head_dim")
+    if head_dim is None:
+        hidden = cfg.get("hidden_size")
+        n_heads = cfg.get("num_attention_heads")
+        if hidden and n_heads:
+            head_dim = hidden // n_heads
+
+    if not (num_layers and num_kv_heads and head_dim):
+        logger.debug(
+            "HF config.json for %s missing layers/kv_heads/head_dim", model_id,
+        )
+        return None
+
+    dtype = str(cfg.get("torch_dtype", "float16")).lower()
+    dtype_bytes = _DTYPE_BYTES.get(dtype, 2)
+    return (2 * num_layers * num_kv_heads * head_dim * dtype_bytes) / 1e9
+
+
+def footprint_gb_from_hf_cache(model_id: str) -> float | None:
+    """Estimate model footprint (GB) from on-disk weight files * slack.
+
+    Sums sizes of ``.safetensors`` / ``.bin`` / ``.pt`` files in the
+    snapshot dir (following symlinks — HF cache stores blobs separately).
+    Returns None if no weight files are present.
+    """
+    snap = _find_hf_snapshot(model_id)
+    if snap is None:
+        return None
+
+    total_bytes = 0
+    for entry in snap.iterdir():
+        if entry.suffix not in _WEIGHT_SUFFIXES:
+            continue
+        try:
+            # stat() follows symlinks, which is what we want — HF stores
+            # the actual blob in ../../blobs/<sha> and symlinks here.
+            total_bytes += entry.stat().st_size
+        except OSError:
+            continue
+
+    if total_bytes == 0:
+        return None
+    return (total_bytes / 1e9) * _FOOTPRINT_SLACK
+
+
 def kv_gb_per_token_for(model_id: str) -> float:
     """Return per-token KV cache size in GB for *model_id*.
 
-    Uses env override → registry → default.
+    Lookup order: env override → HF config probe → registry → default.
     """
     override = os.environ.get("SLOGUARD_KV_BYTES_PER_TOKEN")
     if override:
@@ -135,6 +253,10 @@ def kv_gb_per_token_for(model_id: str) -> float:
             return float(override)
         except ValueError:
             logger.warning("SLOGUARD_KV_BYTES_PER_TOKEN=%r is not a number", override)
+
+    probed = kv_gb_from_hf_config(model_id)
+    if probed is not None:
+        return probed
 
     if model_id in _MODEL_KV_GB_PER_TOKEN:
         return _MODEL_KV_GB_PER_TOKEN[model_id]
@@ -147,13 +269,20 @@ def kv_gb_per_token_for(model_id: str) -> float:
 
 
 def model_footprint_gb_for(model_id: str) -> float:
-    """Return the GB to reserve for weights/activations/overhead for *model_id*."""
+    """Return the GB to reserve for weights/activations/overhead.
+
+    Lookup order: env override → HF cache probe → registry → default.
+    """
     override = os.environ.get("SLOGUARD_MODEL_FOOTPRINT_GB")
     if override:
         try:
             return float(override)
         except ValueError:
             logger.warning("SLOGUARD_MODEL_FOOTPRINT_GB=%r is not a number", override)
+
+    probed = footprint_gb_from_hf_cache(model_id)
+    if probed is not None:
+        return probed
 
     return _MODEL_FOOTPRINT_GB.get(model_id, DEFAULT_MODEL_FOOTPRINT_GB)
 
