@@ -71,6 +71,33 @@ sloguard report --results-dir results/ --output figures/
 sloguard list-optimizers
 ```
 
+## GPU Detection
+
+SLO-Guard auto-detects your GPU's VRAM and looks up a per-token KV-cache
+size for known models, then sizes the search-space memory guard so that
+`max_num_seqs * max_model_len` fits in the available KV budget on the
+actual hardware.
+
+Detection order:
+
+1. `SLOGUARD_GPU_VRAM_GB` env var
+2. PyTorch (`torch.cuda.get_device_properties(0).total_memory`) if installed
+3. `nvidia-smi --query-gpu=memory.total`
+4. Fallback to 40 GB (the A100 baseline)
+
+Override knobs (useful on unsupported hardware or unlisted models):
+
+| Env var | Purpose | Example |
+|---|---|---|
+| `SLOGUARD_GPU_VRAM_GB` | Force a specific VRAM size in GB | `24.0` (L4) |
+| `SLOGUARD_KV_BYTES_PER_TOKEN` | KV cache size in GB per token | `0.000524` (Llama-3.1-8B) |
+| `SLOGUARD_MODEL_FOOTPRINT_GB` | Reserve for weights + activations | `18.0` |
+
+Adding a new model to the registry: edit `_MODEL_KV_GB_PER_TOKEN` and
+`_MODEL_FOOTPRINT_GB` in `src/sloguard/gpu_profile.py`. Compute KV bytes as
+`2 * num_layers * num_kv_heads * head_dim * dtype_bytes / 1e9` (the
+leading `2` is for K and V separately).
+
 ## Configuration Space
 
 SLO-Guard tunes 11 vLLM serving knobs:
