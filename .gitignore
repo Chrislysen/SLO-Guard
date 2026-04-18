@@ -70,6 +70,12 @@ figures/comparison/*
 !figures/comparison/phase_transition.png
 !figures/comparison/config_space.png
 !figures/comparison/goodput_comparison.png
+!figures/multiseed/
+figures/multiseed/*
+!figures/multiseed/multiseed_fastcluster_box.png
+!figures/multiseed/multiseed_posthit_box.png
+!figures/multiseed/multiseed_convergence.png
+!figures/multiseed/multiseed_latency_scatter.png
 
 # OS
 .DS_Store
