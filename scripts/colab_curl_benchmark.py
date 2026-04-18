@@ -28,7 +28,6 @@ import random
 import subprocess
 import time
 import uuid
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +46,7 @@ from sloguard.gpu_profile import (
 )
 from sloguard.server_manager import VLLMServerManager
 from sloguard.slo_contract import SLOContract
+from sloguard.trial_logger import TrialLogger
 from sloguard.types import EvalResult, ServingTrialResult
 
 logging.basicConfig(
@@ -333,6 +333,7 @@ def run_experiment(args: argparse.Namespace) -> None:
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / f"{experiment_id}.jsonl"
+    trial_logger = TrialLogger(log_path)
 
     # Build components
     slo = SLOContract(
@@ -399,7 +400,10 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.server_startup_time_s = server.startup_time
             eval_result.eval_time_s = time.monotonic() - trial_start
             optimizer.tell(config, eval_result)
-            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
+            _log_trial(
+                trial_logger, trial_id, experiment_id, config,
+                eval_result, args, slo, optimizer, phase,
+            )
             all_results.append((config, eval_result))
             _print_status(trial_id, args.budget, eval_result, optimizer)
             continue
@@ -415,7 +419,10 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.eval_time_s = time.monotonic() - trial_start
             server.stop()
             optimizer.tell(config, eval_result)
-            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
+            _log_trial(
+                trial_logger, trial_id, experiment_id, config,
+                eval_result, args, slo, optimizer, phase,
+            )
             all_results.append((config, eval_result))
             _print_status(trial_id, args.budget, eval_result, optimizer)
             continue
@@ -441,7 +448,10 @@ def run_experiment(args: argparse.Namespace) -> None:
             eval_result.eval_time_s = time.monotonic() - trial_start
             server.stop()
             optimizer.tell(config, eval_result)
-            _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
+            _log_trial(
+                trial_logger, trial_id, experiment_id, config,
+                eval_result, args, slo, optimizer, phase,
+            )
             all_results.append((config, eval_result))
             _print_status(trial_id, args.budget, eval_result, optimizer)
             continue
@@ -468,7 +478,10 @@ def run_experiment(args: argparse.Namespace) -> None:
 
         server.stop()
         optimizer.tell(config, eval_result)
-        _log_trial(log_path, trial_id, experiment_id, config, eval_result, args, slo, optimizer, phase)
+        _log_trial(
+            trial_logger, trial_id, experiment_id, config,
+            eval_result, args, slo, optimizer, phase,
+        )
         all_results.append((config, eval_result))
         _print_status(trial_id, args.budget, eval_result, optimizer)
 
@@ -517,7 +530,7 @@ def _print_status(trial_id: int, budget: int, result: EvalResult, optimizer) -> 
 
 
 def _log_trial(
-    log_path: Path,
+    trial_logger: TrialLogger,
     trial_id: int,
     experiment_id: str,
     config: dict,
@@ -527,7 +540,7 @@ def _log_trial(
     optimizer,
     phase: str = "",
 ) -> None:
-    """Append one trial to the JSONL log."""
+    """Append one trial to the JSONL log via TrialLogger (durable write)."""
     trial = ServingTrialResult(
         trial_id=trial_id,
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -570,8 +583,7 @@ def _log_trial(
         optimizer_phase=phase,
         seed=args.seed,
     )
-    with open(log_path, "a") as f:
-        f.write(json.dumps(asdict(trial)) + "\n")
+    trial_logger.log(trial)
 
 
 def main():

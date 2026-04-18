@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,24 @@ from typing import Any
 from sloguard.types import ServingTrialResult
 
 logger = logging.getLogger(__name__)
+
+
+def _durable_append(path: Path, line: str) -> None:
+    """Append *line* to *path* and fsync so it survives a hard kill.
+
+    Without fsync, the most recent writes can sit in the page cache and be
+    lost when the parent process kills the benchmark subprocess on
+    timeout (see ExperimentRunner._run_benchmark_subprocess).
+    """
+    with open(path, "a") as f:
+        f.write(line)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError as e:
+            # Some filesystems / network mounts don't support fsync; fall
+            # back to flush-only with a debug note.
+            logger.debug("fsync unavailable for %s: %s", path, e)
 
 
 class TrialLogger:
@@ -32,21 +51,18 @@ class TrialLogger:
         self._count = 0
 
     def log(self, result: ServingTrialResult) -> None:
-        """Append a trial result as a JSONL line."""
+        """Append a trial result as a JSONL line, durable on disk."""
         data = asdict(result)
         # Clean up None values for compactness
         data = {k: v for k, v in data.items() if v is not None}
-
-        with open(self.path, "a") as f:
-            f.write(json.dumps(data, default=str) + "\n")
+        _durable_append(self.path, json.dumps(data, default=str) + "\n")
 
         self._count += 1
         logger.debug("Logged trial %d to %s", result.trial_id, self.path)
 
     def log_dict(self, data: dict[str, Any]) -> None:
-        """Log a raw dict as a JSONL line."""
-        with open(self.path, "a") as f:
-            f.write(json.dumps(data, default=str) + "\n")
+        """Log a raw dict as a JSONL line, durable on disk."""
+        _durable_append(self.path, json.dumps(data, default=str) + "\n")
         self._count += 1
 
     @property

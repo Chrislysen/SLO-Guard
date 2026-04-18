@@ -122,3 +122,23 @@ class TestTrialLogger:
             logger = TrialLogger(path)
             logger.log(_make_trial(0))
             assert path.exists()
+
+    def test_writes_are_flushed_immediately(self, tmp_log_path):
+        """A second reader must see each line right after log() returns —
+        proves the page-cache flush happens before we move on."""
+        logger = TrialLogger(tmp_log_path)
+        logger.log(_make_trial(0))
+        # Read with a fresh handle, no buffering involvement from the writer
+        with open(tmp_log_path) as f:
+            assert len(f.readlines()) == 1
+
+        logger.log(_make_trial(1))
+        with open(tmp_log_path) as f:
+            assert len(f.readlines()) == 2
+
+    def test_log_dict_is_durable(self, tmp_log_path):
+        logger = TrialLogger(tmp_log_path)
+        logger.log_dict({"trial_id": 7, "x": "y"})
+        with open(tmp_log_path) as f:
+            line = f.readline()
+        assert json.loads(line)["trial_id"] == 7
