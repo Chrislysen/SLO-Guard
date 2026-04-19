@@ -63,6 +63,40 @@ results/multiseed/tba-tpe_seed442/*
 !results/multiseed/tba-tpe_seed342/results.jsonl
 !results/multiseed/tba-tpe_seed442/results.jsonl
 !results/multiseed/summary.json
+# Concurrent-harness re-run (same layout, different measurement condition)
+!results/multiseed_concurrent/
+results/multiseed_concurrent/*
+!results/multiseed_concurrent/random_seed42/
+!results/multiseed_concurrent/random_seed142/
+!results/multiseed_concurrent/random_seed242/
+!results/multiseed_concurrent/random_seed342/
+!results/multiseed_concurrent/random_seed442/
+!results/multiseed_concurrent/tba-tpe_seed42/
+!results/multiseed_concurrent/tba-tpe_seed142/
+!results/multiseed_concurrent/tba-tpe_seed242/
+!results/multiseed_concurrent/tba-tpe_seed342/
+!results/multiseed_concurrent/tba-tpe_seed442/
+results/multiseed_concurrent/random_seed42/*
+results/multiseed_concurrent/random_seed142/*
+results/multiseed_concurrent/random_seed242/*
+results/multiseed_concurrent/random_seed342/*
+results/multiseed_concurrent/random_seed442/*
+results/multiseed_concurrent/tba-tpe_seed42/*
+results/multiseed_concurrent/tba-tpe_seed142/*
+results/multiseed_concurrent/tba-tpe_seed242/*
+results/multiseed_concurrent/tba-tpe_seed342/*
+results/multiseed_concurrent/tba-tpe_seed442/*
+!results/multiseed_concurrent/random_seed42/results.jsonl
+!results/multiseed_concurrent/random_seed142/results.jsonl
+!results/multiseed_concurrent/random_seed242/results.jsonl
+!results/multiseed_concurrent/random_seed342/results.jsonl
+!results/multiseed_concurrent/random_seed442/results.jsonl
+!results/multiseed_concurrent/tba-tpe_seed42/results.jsonl
+!results/multiseed_concurrent/tba-tpe_seed142/results.jsonl
+!results/multiseed_concurrent/tba-tpe_seed242/results.jsonl
+!results/multiseed_concurrent/tba-tpe_seed342/results.jsonl
+!results/multiseed_concurrent/tba-tpe_seed442/results.jsonl
+!results/multiseed_concurrent/summary.json
 figures/*
 !figures/comparison/
 figures/comparison/*
@@ -76,6 +110,12 @@ figures/multiseed/*
 !figures/multiseed/multiseed_posthit_box.png
 !figures/multiseed/multiseed_convergence.png
 !figures/multiseed/multiseed_latency_scatter.png
+!figures/multiseed_concurrent/
+figures/multiseed_concurrent/*
+!figures/multiseed_concurrent/multiseed_fastcluster_box.png
+!figures/multiseed_concurrent/multiseed_posthit_box.png
+!figures/multiseed_concurrent/multiseed_convergence.png
+!figures/multiseed_concurrent/multiseed_latency_scatter.png
 
 # OS
 .DS_Store

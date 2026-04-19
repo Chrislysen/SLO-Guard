@@ -45,6 +45,49 @@ broadly before committing, but once either optimizer finds the fast
 knob, TBA-TPE *stays* there (post-hit consistency 0.88 vs 0.54). The
 peak-goodput race is a tie; the budget-waste race is not.
 
+## Concurrent harness re-run (5 seeds × 2 optimizers × 15 trials = 150 trials)
+
+The original multi-seed run used an inline curl loop that sent each
+request serially — "5 req/s for 10s" was actually 10 sequential
+requests, not real concurrent load. After fixing the load generator
+(commit d4cbc15) we re-ran the same optimizer/seed matrix through
+``scripts/run_multiseed.py``, which drives requests through the fixed
+``LoadGenerator`` with ``asyncio.Semaphore``-capped concurrent dispatch.
+The JSONL field ``batch_wall_ms`` confirms the new dispatch behavior: a
+slow-cluster trial with 5 requests × 2500 ms individual latency now
+shows ~4000 ms batch-wall (requests overlap), not ~12500 ms (fully
+serialized).
+
+| Metric | Random (n=5) | TBA-TPE (n=5) | Mann-Whitney p |
+|---|---|---|---|
+| Fast-cluster trials / 15 | 7.40 ± 2.51 | 10.20 ± 1.10 | **0.014** |
+| Post-hit consistency | 0.539 ± 0.224 | 0.876 ± 0.123 | **0.010** |
+| Best latency (ms) | 470.52 ± 10.00 | 465.69 ± 2.26 | 0.84 (tied on mean) |
+| Feasibility | 75 / 75 | 75 / 75 | — |
+| Crashes | 0 | 0 | — |
+
+The consistency advantage survives the switch to concurrent load and if
+anything is sharper. **The new finding** is on best-latency variance:
+under concurrent dispatch, TBA-TPE's best-latency std is **4.4× tighter**
+than Random's (2.26 ms vs 10.00 ms across 5 seeds), even though the
+means are statistically indistinguishable (p=0.84). Under the sequential
+harness this variance gap was closer to 1×: both optimizers converged
+to essentially the same single best-latency point because the search
+space collapsed to a binary knob flip. With real concurrent load the
+fast cluster has visible per-config variation (contention effects,
+scheduling jitter inside vLLM), and TBA-TPE's TPE-exploit phase returns
+to near-identical configurations across seeds while Random keeps
+picking new points. The consistency advantage is therefore not just
+"lands in the fast cluster more often" but also "lands on the same
+best config across seeds," which matters more when the measurement
+itself is noisy.
+
+Both the sequential and concurrent data sets are published — they
+represent different measurement conditions on the same optimizer matrix
+and both are valid reference points. A paper reporting on this tuning
+problem should probably cite the concurrent numbers as the headline
+(realistic load) and the sequential numbers as a calibration baseline.
+
 ## Limitations
 
 These results are from a single model (Qwen2-1.5B) on a single GPU

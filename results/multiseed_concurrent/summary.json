@@ -1,0 +1,252 @@
+{
+  "fast_threshold_ms": 1000.0,
+  "per_optimizer": {
+    "random": {
+      "seeds": [
+        42,
+        142,
+        242,
+        342,
+        442
+      ],
+      "per_seed": [
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 9,
+          "post_hit_consistency": 0.7272727272727273,
+          "first_fast_hit_trial": 4,
+          "best_latency_ms": 464.85157012939453
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 8,
+          "post_hit_consistency": 0.6363636363636364,
+          "first_fast_hit_trial": 4,
+          "best_latency_ms": 461.42139434814453
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 3,
+          "post_hit_consistency": 0.16666666666666666,
+          "first_fast_hit_trial": 3,
+          "best_latency_ms": 486.37704849243164
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 9,
+          "post_hit_consistency": 0.6666666666666666,
+          "first_fast_hit_trial": 3,
+          "best_latency_ms": 465.87986946105957
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 8,
+          "post_hit_consistency": 0.5,
+          "first_fast_hit_trial": 1,
+          "best_latency_ms": 474.05290603637695
+        }
+      ],
+      "total_trials": 75,
+      "total_feasible": 75,
+      "total_crashes": 0,
+      "fast_cluster_count": {
+        "mean": 7.4,
+        "std": 2.5099800796022267,
+        "min": 3,
+        "max": 9,
+        "n": 5,
+        "values": [
+          9,
+          8,
+          3,
+          9,
+          8
+        ]
+      },
+      "post_hit_consistency": {
+        "mean": 0.5393939393939394,
+        "std": 0.22437547240525174,
+        "min": 0.16666666666666666,
+        "max": 0.7272727272727273,
+        "n": 5,
+        "values": [
+          0.7272727272727273,
+          0.6363636363636364,
+          0.16666666666666666,
+          0.6666666666666666,
+          0.5
+        ]
+      },
+      "best_latency_ms": {
+        "mean": 470.51655769348145,
+        "std": 10.00467248502147,
+        "min": 461.42139434814453,
+        "max": 486.37704849243164,
+        "n": 5,
+        "values": [
+          464.85157012939453,
+          461.42139434814453,
+          486.37704849243164,
+          465.87986946105957,
+          474.05290603637695
+        ]
+      },
+      "first_fast_hit_trial": {
+        "mean": 3,
+        "std": 1.224744871391589,
+        "min": 1,
+        "max": 4,
+        "n": 5,
+        "values": [
+          4,
+          4,
+          3,
+          3,
+          1
+        ]
+      }
+    },
+    "tba-tpe": {
+      "seeds": [
+        42,
+        142,
+        242,
+        342,
+        442
+      ],
+      "per_seed": [
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 9,
+          "post_hit_consistency": 1.0,
+          "first_fast_hit_trial": 7,
+          "best_latency_ms": 467.5391674041748
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 9,
+          "post_hit_consistency": 1.0,
+          "first_fast_hit_trial": 7,
+          "best_latency_ms": 468.0391311645508
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 11,
+          "post_hit_consistency": 0.8333333333333334,
+          "first_fast_hit_trial": 3,
+          "best_latency_ms": 462.9612922668457
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 11,
+          "post_hit_consistency": 0.8333333333333334,
+          "first_fast_hit_trial": 3,
+          "best_latency_ms": 466.1881446838379
+        },
+        {
+          "n_trials": 15,
+          "n_feasible": 15,
+          "n_crashes": 0,
+          "fast_cluster_count": 11,
+          "post_hit_consistency": 0.7142857142857143,
+          "first_fast_hit_trial": 1,
+          "best_latency_ms": 463.72876167297363
+        }
+      ],
+      "total_trials": 75,
+      "total_feasible": 75,
+      "total_crashes": 0,
+      "fast_cluster_count": {
+        "mean": 10.2,
+        "std": 1.0954451150103321,
+        "min": 9,
+        "max": 11,
+        "n": 5,
+        "values": [
+          9,
+          9,
+          11,
+          11,
+          11
+        ]
+      },
+      "post_hit_consistency": {
+        "mean": 0.8761904761904762,
+        "std": 0.12302867316917916,
+        "min": 0.7142857142857143,
+        "max": 1.0,
+        "n": 5,
+        "values": [
+          1.0,
+          1.0,
+          0.8333333333333334,
+          0.8333333333333334,
+          0.7142857142857143
+        ]
+      },
+      "best_latency_ms": {
+        "mean": 465.69129943847656,
+        "std": 2.26264660677677,
+        "min": 462.9612922668457,
+        "max": 468.0391311645508,
+        "n": 5,
+        "values": [
+          467.5391674041748,
+          468.0391311645508,
+          462.9612922668457,
+          466.1881446838379,
+          463.72876167297363
+        ]
+      },
+      "first_fast_hit_trial": {
+        "mean": 4.2,
+        "std": 2.6832815729997477,
+        "min": 1,
+        "max": 7,
+        "n": 5,
+        "values": [
+          7,
+          7,
+          3,
+          3,
+          1
+        ]
+      }
+    }
+  },
+  "mann_whitney": {
+    "fast_cluster_count": {
+      "U": 23.0,
+      "p": 0.014229868458155282,
+      "alternative": "tba-tpe > random"
+    },
+    "post_hit_consistency": {
+      "U": 24.0,
+      "p": 0.010392171584393466,
+      "alternative": "tba-tpe > random"
+    },
+    "best_latency_ms": {
+      "U": 11.0,
+      "p": 0.8412698412698413,
+      "alternative": "two-sided"
+    }
+  }
+}

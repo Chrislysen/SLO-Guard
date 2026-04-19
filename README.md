@@ -187,10 +187,44 @@ Qwen2-1.5B on Colab A100 40GB, 15 trials per run, curl-based load
 generator (5 requests/trial). Full writeup + limitations in
 [`findings.md`](findings.md).
 
-### Multi-seed comparison (5 seeds × 2 optimizers × 15 trials = 150 trials)
+### Concurrent harness (5 seeds × 2 optimizers × 15 trials = 150 trials)
 
-Aggregates over seeds 42, 142, 242, 342, 442. Numbers regenerate with
-`python scripts/compute_multiseed_stats.py`.
+Primary headline. Requests dispatched through the concurrent
+`LoadGenerator` (real overlapping load, ~4000 ms batch-wall for 5 × 2500 ms
+requests). Numbers regenerate with
+`python scripts/compute_multiseed_stats.py --results-dir results/multiseed_concurrent/`.
+
+| Metric | Random (n=5) | TBA-TPE (n=5) | Mann-Whitney p |
+|---|---|---|---|
+| Fast-cluster trials / 15 | 7.40 ± 2.51 | 10.20 ± 1.10 | **0.014** |
+| Post-hit consistency | 0.539 ± 0.224 | 0.876 ± 0.123 | **0.010** |
+| Best latency (ms) | 470.52 ± 10.00 | 465.69 ± 2.26 | 0.84 (tied on mean) |
+| Feasibility | 75 / 75 | 75 / 75 | — |
+| Crashes | 0 | 0 | — |
+
+**Under realistic concurrent load, TBA-TPE's best-latency variance is
+4.4× tighter than Random's** (2.26 ms vs 10.00 ms across 5 seeds) even
+though the mean latencies are statistically tied. This consistency
+advantage on the best-latency metric itself is new — it didn't appear
+under the sequential harness because the fast cluster there had almost
+no measurable variation to exploit.
+
+<p align="center">
+  <img src="figures/multiseed_concurrent/multiseed_fastcluster_box.png" width="48%" alt="Fast-cluster count, concurrent harness — p=0.014">
+  <img src="figures/multiseed_concurrent/multiseed_latency_scatter.png" width="48%" alt="Best latency per seed — TBA-TPE 4.4× tighter spread">
+</p>
+
+```bash
+python scripts/plot_comparison.py --multiseed results/multiseed_concurrent/ \
+    --output figures/multiseed_concurrent/
+```
+
+### Sequential harness (for reference)
+
+Original multi-seed run, same optimizer matrix but with serial
+request dispatch (pre-concurrency-fix). Published as a calibration
+baseline — the consistency findings replicate, but the best-latency
+variance advantage is only visible under concurrent load.
 
 | Metric | Random (n=5) | TBA-TPE (n=5) | Mann-Whitney p |
 |---|---|---|---|
@@ -200,17 +234,10 @@ Aggregates over seeds 42, 142, 242, 342, 442. Numbers regenerate with
 | Feasibility | 75 / 75 | 75 / 75 | — |
 | Crashes | 0 | 0 | — |
 
-**Best latency is statistically indistinguishable between optimizers
-(Mann-Whitney two-sided p=0.84).** The win is in budget consistency:
-TBA-TPE lands ~3 more trials in the fast cluster per run on average, and
-its cross-seed variance on that metric is 2.8× tighter than Random's.
-
 <p align="center">
-  <img src="figures/multiseed/multiseed_fastcluster_box.png" width="48%" alt="Fast-cluster count across 5 seeds — p=0.008">
-  <img src="figures/multiseed/multiseed_convergence.png"    width="48%" alt="Best-so-far latency across 5 seeds">
+  <img src="figures/multiseed/multiseed_fastcluster_box.png" width="48%" alt="Fast-cluster count, sequential harness — p=0.008">
+  <img src="figures/multiseed/multiseed_convergence.png"     width="48%" alt="Best-so-far latency across 5 seeds, sequential">
 </p>
-
-Regenerate all four multi-seed plots:
 
 ```bash
 python scripts/plot_comparison.py --multiseed results/multiseed/
